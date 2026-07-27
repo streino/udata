@@ -28,10 +28,9 @@ def dataservice_from_rdf(
     graph: Graph,
     dataservice: Dataservice,
     node: Node | None,
-    all_datasets: list[Dataset],
     remote_url_prefix: str | None = None,
     dryrun: bool = False,
-) -> Dataservice:
+) -> tuple[Dataservice, list[str]]:
     """
     Create or update a dataservice from a RDF/DCAT graph
     """
@@ -61,46 +60,6 @@ def dataservice_from_rdf(
         contact_point for role in roles for contact_point in role
     ] or dataservice.contact_points
 
-    harvested_datasets = [dataset for dataset in all_datasets if dataset is not None]
-
-    for dataset_node in d.objects(DCAT.servesDataset):
-        # This node references a dataset, it does not define it: the definition lives in
-        # another graph — always so for CSW, where each record is parsed as its own graph —
-        # and sometimes in another catalog entirely, in which case nothing can be attached.
-        # GeoDCAT-AP writes the reference either as a `DCT.identifier` or, when the source
-        # identifier is a URL, as the node URI alone.
-        id = dataset_node.value(DCT.identifier)
-        uri = (
-            dataset_node.identifier.toPython()
-            if isinstance(dataset_node.identifier, URIRef)
-            else None
-        )
-
-        dataset = next(
-            (
-                dataset
-                for dataset in harvested_datasets
-                if (id is not None and dataset.harvest.remote_id == id)
-                or (uri is not None and dataset.harvest.uri == uri)
-            ),
-            None,
-        )
-
-        if dataset is None and id is not None:
-            # We try with `endswith` because Europe XSLT have problems with IDs. Sometimes they are prefixed with the domain of the catalog, sometimes not.
-            dataset = next(
-                (
-                    dataset
-                    for dataset in harvested_datasets
-                    if dataset.harvest.remote_id.endswith(id)
-                ),
-                None,
-            )
-
-        # We append the dataset to the list of the current attached ones if not already attached
-        if dataset is not None and dataset not in dataservice.datasets:
-            dataservice.datasets.append(dataset)
-
     license = rdf_value(d, DCT.license)
     if license is not None:
         dataservice.license = License.guess(license)
@@ -118,7 +77,10 @@ def dataservice_from_rdf(
 
     dataservice.tags = themes_from_rdf(d)
 
-    return dataservice
+    # FIXME: not everything happens in _from_rdf now, we still have dangling stuff => OK?
+    serves = [str(id) for n in d.objects(DCAT.servesDataset) if (id := n.value(DCT.identifier))]
+
+    return dataservice, serves
 
 
 def dataservice_to_rdf(dataservice: Dataservice, graph=None):

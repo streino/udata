@@ -31,7 +31,7 @@ from udata.rdf import (
 from udata.storage.s3 import store_as_json
 from udata.utils import safe_unicode, uniquify
 
-from .base import BaseBackend, HarvestExtraConfig, HarvestFeature
+from .base import BaseBackend, Harvestable, HarvestExtraConfig, HarvestFeature
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +76,10 @@ class DcatBackend(BaseBackend):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.graphs = list[tuple[Graph, int]]()
+        # self.pending_datasets = list[tuple[Dataset, str]]()
+        self.pending_dataservices = list[tuple[Dataservice, list[str]]]()
+        self.by_data_id = dict[str, Harvestable]()
+        # self.by_metadata_id = dict[str, Harvestable]()
 
     @override
     def inner_harvest(self):
@@ -85,13 +89,9 @@ class DcatBackend(BaseBackend):
                 # cache graph first in case processing raises exceptions, so graphs
                 # are always available to store_graphs()
                 self.graphs.append((page_graph, page_number))
-                self.process_one_datasets_page(page_graph, page_number)
-
-            # We do a second pass to have all datasets in memory and attach datasets
-            # to dataservices. It could be better to be one pass of graph walking and
-            # then one pass of attaching datasets to dataservices.
-            for page_graph, page_number in self.graphs:
-                self.process_one_dataservices_page(page_graph, page_number)
+                self.process_page(page_graph, page_number)
+            # FIXME: add tests
+            self.process_pending()
         finally:
             try:
                 self.store_graphs()
@@ -144,7 +144,20 @@ class DcatBackend(BaseBackend):
             yield page_graph, page_number
             page_number += 1
 
-    def process_one_datasets_page(self, graph: Graph, page_number: int):
+    # FIXME: DRY
+    def process_page(self, graph: Graph, page_number: int):
+        for node in self.list_datasets(graph):
+            remote_id = str(v) if (v := graph.value(node, DCT.identifier)) else None
+            self.process_item(
+                remote_id, self.process_dataset, node=node, graph=graph, page_number=page_number
+            )
+        for node in self.list_dataservices(graph):
+            remote_id = str(v) if (v := graph.value(node, DCT.identifier)) else None
+            self.process_item(
+                remote_id, self.process_dataservice, node=node, graph=graph, page_number=page_number
+            )
+
+    def list_datasets(self, graph: Graph):
         # Manually deduplicate subjects to ensure a node is only processed once.
         # Rdflib subjects() will return the same node multiple times if it matches different types,
         # which can occur with ISO series converted by SEMIC (by default it sets rdf:type to both
@@ -152,23 +165,14 @@ class DcatBackend(BaseBackend):
         for node in uniquify(graph.subjects(RDF.type, [DCAT.Dataset, DCAT.DatasetSeries])):
             if self.is_dataset_external_to_this_graph(node, graph):
                 continue
+            yield node
 
-            remote_id = str(v) if (v := graph.value(node, DCT.identifier)) else None
-            self.process_item(
-                remote_id, self.process_dataset, node=node, graph=graph, page_number=page_number
-            )
-
-    def process_one_dataservices_page(self, graph: Graph, page_number: int):
+    def list_dataservices(self, graph: Graph):
         access_services = {o for _, _, o in graph.triples((None, DCAT.accessService, None))}
-
         for node in graph.subjects(RDF.type, DCAT.DataService):
             if node in access_services:
                 continue
-
-            remote_id = str(v) if (v := graph.value(node, DCT.identifier)) else None
-            self.process_item(
-                remote_id, self.process_dataservice, node=node, graph=graph, page_number=page_number
-            )
+            yield node
 
     def is_dataset_external_to_this_graph(self, node: Node, graph: Graph) -> bool:
         # In dataservice nodes we have `servesDataset` or `hasPart` that can contains nodes
@@ -213,6 +217,13 @@ class DcatBackend(BaseBackend):
             graph, dataset, node=node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun
         )
 
+        # FIXME?: dataset.harvest.remote_id is set later in process_item
+        self.by_data_id[harvest_item.remote_id] = dataset
+        # self.by_metadata_id[dataset.harvest.remote_metadata_id] = dataset
+
+        # if parent:
+        #     self.pending_datasets.append((dataset, parent))
+
         return dataset
 
     def process_dataservice(
@@ -226,16 +237,46 @@ class DcatBackend(BaseBackend):
         remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
 
         dataservice = self.get_item(harvest_item.remote_id, Dataservice)
-        dataservice = dataservice_from_rdf(
+        dataservice, serves = dataservice_from_rdf(
             graph,
             dataservice,
             node,
-            [itm.dataset for itm in self.job.items],
             remote_url_prefix=remote_url_prefix,
             dryrun=self.dryrun,
         )
 
+        # FIXME: needed?
+        self.by_data_id[harvest_item.remote_id] = dataservice
+        # self.by_metadata_id[harvest_item.remote_metadata_id] = dataservice
+
+        if serves:
+            self.pending_dataservices.append((dataservice, serves))
+
         return dataservice
+
+    def process_pending(self):
+        # for dataset, parent in self.pending_datasets:
+        #     dataset.parent = self.by_metadata_id.get(parent)
+        #     if not self.dryrun:
+        #         dataset.save()
+
+        for dataservice, serves in self.pending_dataservices:
+            for id in serves:
+                dataset = self.by_data_id.get(id)
+                if dataset is None:
+                    # FIXME: better solution?
+                    # Try with `endswith` because Europe XSLT have problems with IDs.
+                    # Sometimes they are prefixed with the domain of the catalog, sometimes not.
+                    dataset = next(
+                        (d for k, d in self.by_data_id.items() if k.endswith(id)),
+                        None,
+                    )
+                if dataset is None or dataset in dataservice.datasets:
+                    continue
+                dataservice.datasets.append(dataset)
+            if not self.dryrun:
+                # FIXME: needed, or done by base?
+                dataservice.save()
 
     def store_graphs(self):
         # The official MongoDB document size in 16MB. The default value here is 15MB to account
