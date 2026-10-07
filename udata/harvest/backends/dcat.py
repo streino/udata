@@ -5,7 +5,7 @@ from datetime import date
 from typing import ClassVar, Generator
 
 from flask import current_app
-from rdflib import Graph, Node
+from rdflib import Graph, Node, URIRef
 from rdflib.namespace import RDF
 from saxonche import PySaxonProcessor, PyXdmNode
 from typing_extensions import override
@@ -144,7 +144,12 @@ class DcatBackend(BaseBackend):
     # FIXME: DRY
     def process_page(self, graph: Graph, page_number: int):
         for node in self.list_datasets(graph):
-            remote_id = str(v) if (v := graph.value(node, DCT.identifier)) else None
+            remote_id = None
+            if v := graph.value(node, DCT.identifier):
+                remote_id = str(v)
+            elif isinstance(node, URIRef):
+                # Fallback to the node's URI when no dct:identifier is present.
+                remote_id = str(node)
             self.process_item(
                 remote_id, self.process_dataset, node=node, graph=graph, page_number=page_number
             )

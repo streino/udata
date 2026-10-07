@@ -15,8 +15,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Hashable, Iterable
 
-from rdflib import URIRef
-
 
 @dataclass
 class Reference:
@@ -37,22 +35,38 @@ def references_from_rdf(node, predicate) -> Reference:
     a `dct:identifier` but no `rdf:resource`) are ignored and a warning is emitted.
     """
     # Import DCT to detect inline identifiers.
+    from rdflib import BNode
+
     from udata.rdf import DCT
 
+    identifiers: list[str] = []
     uris: list[str] = []
+
     for obj in node.objects(predicate):
-        # If the object has a dct:identifier, treat it as an inline reference and ignore.
-        if obj.value(DCT.identifier) is not None:
+        # ``obj`` is a ``rdflib.resource.Resource``. Its ``identifier`` attribute holds the actual node.
+        identifier_node = getattr(obj, "identifier", None)
+        if identifier_node is None:
+            # Unexpected case – log and skip.
             log.warning("Ignoring inline %s reference – only rdf:resource is supported", predicate)
             continue
-        # Otherwise, if the object has a URI identifier (rdf:resource), collect it.
-        if isinstance(obj.identifier, URIRef):
-            uris.append(str(obj.identifier))
-        else:
-            # Blank node without identifier – also ignore with warning.
+        # If the underlying identifier is a blank node, treat as an inline definition and ignore.
+        if isinstance(identifier_node, BNode):
             log.warning("Ignoring inline %s reference – only rdf:resource is supported", predicate)
-    # No identifiers are collected in the URI‑only mode.
-    return Reference(identifiers=[], uris=uris)
+            continue
+        # At this point ``identifier_node`` is a URIRef.
+        # Look for a ``dct:identifier`` triple on that node.
+        dct_id = node.graph.value(subject=identifier_node, predicate=DCT.identifier)
+        if dct_id is not None:
+            identifiers.append(str(dct_id))
+            continue
+        # No ``dct:identifier`` – treat as a plain ``rdf:resource`` URI.
+        uris.append(str(identifier_node))
+
+    # If any plain URI references were collected, identifiers should be ignored.
+    if uris:
+        identifiers = []
+
+    return Reference(identifiers=identifiers, uris=uris)
 
 
 class ReferenceKind:
