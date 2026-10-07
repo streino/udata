@@ -131,6 +131,26 @@ The udata rdf implementation and its harvester were created using these referenc
 - [Gov UK references][gov-uk-references]
 - [Data.gov.uk guidance][gov-uk-guidance]
 
+### Reference handling
+
+When converting RDF to internal models the parser now uses the helper
+`udata.references.references_from_rdf`. The helper extracts **only**
+`rdf:resource` URIs; inline resources that provide a `dct:identifier` or are blank‑nodes are ignored (a warning is emitted).
+
+The returned `Reference` object contains two lists:
+- `identifiers` – never populated for DCAT harvests (inline definitions are ignored).
+- `uris` – the absolute URIs that will be used by the `ReferenceResolver`.
+
+Typical usage inside a parser:
+
+```python
+ref = references_from_rdf(resource, DCAT.inSeries)
+if ref.uris or ref.identifiers:
+    dataset.add_pending(IN_SERIES, ref)
+```
+
+This logic replaces the previous manual graph traversal and guarantees consistent handling across all harvest back‑ends.
+
 The used namespaces are:
 
 - dct: <http://purl.org/dc/terms/>
@@ -141,7 +161,6 @@ The used namespaces are:
 - spdx: <http://spdx.org/rdf/terms#>
 - freq: <http://purl.org/cld/freq/>
 - scv: <http://purl.org/NET/scovo#>
-
 
 [rdf]: https://www.w3.org/RDF/
 [rdf-xml]: https://www.w3.org/TR/rdf-syntax-grammar/

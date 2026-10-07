@@ -45,6 +45,24 @@ class MyHarvester(BaseBackend):
         return dataset
 ```
 
+## Reference handling
+
+Harvested items are now built in two distinct phases:
+
+1. **Parsing phase** – each RDF node is turned into a model (`Dataset` or `Dataservice`).  The model is created, populated, and any cross‑resource link is stored as a *pending reference* using the `Harvestable.add_pending()` API. No `save()` is performed at this stage.
+2. **Resolution phase** – after all items of a harvest job have been parsed, `ReferenceResolver` builds a registry of all harvested objects (by `remote_id` and by absolute URI) and resolves each pending reference.  The resolver then updates the owner objects (`Dataset.in_series`, `Dataservice.datasets`, …) and finally persists them (unless the job runs in *dry‑run* mode).
+
+The two‑pass design guarantees that a reference can point to an object that appears later in the same catalog.
+
+### Built‑in reference kinds
+- **`IN_SERIES`** – a dataset belongs to a series (`dcat:inSeries`). The parent series identifier is stored in `dataset.extras['dcat']['in_series']`.
+- **`SERVES_DATASETS`** – a dataservice serves one or more datasets (`dcat:servesDataset`). The relation is stored in `dataservice.datasets`.
+
+### Adding a new reference type
+When implementing a new harvest backend you can create a custom `ReferenceKind` subclass (see the *Extending udata* doc). Register a singleton instance (e.g. `MY_KIND = MyKind()`) and use `model.add_pending(MY_KIND, ref)` inside the RDF parser.
+
+**Dry‑run behavior** – During a dry‑run the resolver still builds the registry and resolves references, but the final `save()` calls are skipped, letting you validate the whole graph without persisting anything.
+
 The call to `process_item` is a wrapper that, for a given record, performs the following steps:
 1. Create a new `HarvestItem` in the running job for the record.
 2. Call the processor function (`dataset_processor` in pseudo-code above) on the record.
