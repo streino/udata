@@ -5,6 +5,7 @@ from udata.core.constants import HVD
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.models import Dataset, License
 from udata.core.dataset.rdf import dataset_to_graph_id, sanitize_html
+from udata.harvest.references import SERVES_DATASETS
 from udata.rdf import (
     CONTACT_POINT_ENTITY_TO_ROLE,
     DCAT,
@@ -22,6 +23,7 @@ from udata.rdf import (
     themes_from_rdf,
     url_from_rdf,
 )
+from udata.references import references_from_rdf
 
 
 def dataservice_from_rdf(
@@ -30,7 +32,7 @@ def dataservice_from_rdf(
     node: Node | None,
     remote_url_prefix: str | None = None,
     dryrun: bool = False,
-) -> tuple[Dataservice, list[str]]:
+) -> Dataservice:
     """
     Create or update a dataservice from a RDF/DCAT graph
     """
@@ -77,10 +79,11 @@ def dataservice_from_rdf(
 
     dataservice.tags = themes_from_rdf(d)
 
-    # FIXME: not everything happens in _from_rdf now, we still have dangling stuff => OK?
-    serves = [str(id) for n in d.objects(DCAT.servesDataset) if (id := n.value(DCT.identifier))]
+    serves = references_from_rdf(d, DCAT.servesDataset)
+    if serves.identifiers or serves.uris:
+        dataservice.add_pending(SERVES_DATASETS, serves)
 
-    return dataservice, serves
+    return dataservice
 
 
 def dataservice_to_rdf(dataservice: Dataservice, graph=None):

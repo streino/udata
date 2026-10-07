@@ -24,6 +24,7 @@ from udata.core.constants import HVD
 from udata.core.dataset.models import HarvestResourceMetadata
 from udata.core.spatial.models import SpatialCoverage
 from udata.harvest.exceptions import HarvestSkipException
+from udata.harvest.references import IN_SERIES
 from udata.mongo.datetime_fields import DateRange
 from udata.rdf import (
     ADMS,
@@ -63,6 +64,7 @@ from udata.rdf import (
     url_from_rdf,
     vocabulary_key,
 )
+from udata.references import references_from_rdf
 from udata.utils import get_by, safe_harvest_datetime, safe_unicode, uniquify
 
 from .constants import OGC_SERVICE_FORMATS, DistanceUom, UpdateFrequency
@@ -1070,6 +1072,10 @@ def dataset_from_rdf(
     dataset.harvest.modified_at = safe_harvest_datetime(
         modified_at, "DCT.modified (dataset)", refuse_future=True
     )
+
+    in_series = references_from_rdf(d, DCAT.inSeries)
+    if in_series.identifiers or in_series.uris:
+        dataset.add_pending(IN_SERIES, in_series)
 
     return dataset
 

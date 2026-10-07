@@ -42,7 +42,7 @@ from udata.core.contact_point.models import (
 )
 from udata.core.dataset.api_fields import temporal_coverage_fields
 from udata.core.dataset.preview import TabularAPIPreview
-from udata.core.harvest import HarvestMetadata
+from udata.core.harvest import Harvestable, HarvestMetadata
 from udata.core.linkable import Linkable
 from udata.core.metrics.helpers import get_stock_metrics
 from udata.core.metrics.models import WithMetrics
@@ -598,6 +598,7 @@ class Dataset(
     WithMetrics,
     WithAccessType,
     DatasetBadgeMixin,
+    Harvestable,
     Owned,
     Linkable,
     Document[DatasetQuerySet],
@@ -657,6 +658,8 @@ class Dataset(
         auditable=False,
     )
     geopf = field(EmbeddedDocumentField(GeopfDatasetMetadata), auditable=False)
+
+    harvest_metadata_class = HarvestDatasetMetadata
 
     quality_cached = field(DictField(), auditable=False)
 
@@ -1304,10 +1307,6 @@ class Dataset(
             Follow.objects(following=self), date_label="since"
         )
         self.save(signal_kwargs={"ignores": ["post_save"]})
-
-    def set_harvested(self):
-        if not self.harvest:
-            self.harvest = HarvestDatasetMetadata()
 
 
 pre_init.connect(Dataset.pre_init, sender=Dataset)

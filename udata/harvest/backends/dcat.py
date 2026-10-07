@@ -16,6 +16,7 @@ from udata.core.dataservices.rdf import dataservice_from_rdf
 from udata.core.dataset.models import Dataset
 from udata.core.dataset.rdf import dataset_from_rdf
 from udata.harvest.models import HarvestError, HarvestItem
+from udata.harvest.references import ReferenceResolver
 from udata.i18n import lazy_gettext as _
 from udata.rdf import (
     DCAT,
@@ -31,7 +32,7 @@ from udata.rdf import (
 from udata.storage.s3 import store_as_json
 from udata.utils import safe_unicode, uniquify
 
-from .base import BaseBackend, Harvestable, HarvestExtraConfig, HarvestFeature
+from .base import BaseBackend, HarvestExtraConfig, HarvestFeature
 
 log = logging.getLogger(__name__)
 
@@ -76,10 +77,7 @@ class DcatBackend(BaseBackend):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.graphs = list[tuple[Graph, int]]()
-        # self.pending_datasets = list[tuple[Dataset, str]]()
-        self.pending_dataservices = list[tuple[Dataservice, list[str]]]()
-        self.by_data_id = dict[str, Harvestable]()
-        # self.by_metadata_id = dict[str, Harvestable]()
+        self.references = ReferenceResolver(dryrun=self.dryrun)
 
     @override
     def inner_harvest(self):
@@ -90,9 +88,8 @@ class DcatBackend(BaseBackend):
                 # are always available to store_graphs()
                 self.graphs.append((page_graph, page_number))
                 self.process_page(page_graph, page_number)
-            # FIXME: add tests
-            self.process_pending()
         finally:
+            self.references.resolve()
             try:
                 self.store_graphs()
             except Exception as e:
@@ -217,12 +214,7 @@ class DcatBackend(BaseBackend):
             graph, dataset, node=node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun
         )
 
-        # FIXME?: dataset.harvest.remote_id is set later in process_item
-        self.by_data_id[harvest_item.remote_id] = dataset
-        # self.by_metadata_id[dataset.harvest.remote_metadata_id] = dataset
-
-        # if parent:
-        #     self.pending_datasets.append((dataset, parent))
+        self.references.register(dataset)
 
         return dataset
 
@@ -237,7 +229,7 @@ class DcatBackend(BaseBackend):
         remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
 
         dataservice = self.get_item(harvest_item.remote_id, Dataservice)
-        dataservice, serves = dataservice_from_rdf(
+        dataservice = dataservice_from_rdf(
             graph,
             dataservice,
             node,
@@ -245,38 +237,9 @@ class DcatBackend(BaseBackend):
             dryrun=self.dryrun,
         )
 
-        # FIXME: needed?
-        self.by_data_id[harvest_item.remote_id] = dataservice
-        # self.by_metadata_id[harvest_item.remote_metadata_id] = dataservice
-
-        if serves:
-            self.pending_dataservices.append((dataservice, serves))
+        self.references.register(dataservice)
 
         return dataservice
-
-    def process_pending(self):
-        # for dataset, parent in self.pending_datasets:
-        #     dataset.parent = self.by_metadata_id.get(parent)
-        #     if not self.dryrun:
-        #         dataset.save()
-
-        for dataservice, serves in self.pending_dataservices:
-            for id in serves:
-                dataset = self.by_data_id.get(id)
-                if dataset is None:
-                    # FIXME: better solution?
-                    # Try with `endswith` because Europe XSLT have problems with IDs.
-                    # Sometimes they are prefixed with the domain of the catalog, sometimes not.
-                    dataset = next(
-                        (d for k, d in self.by_data_id.items() if k.endswith(id)),
-                        None,
-                    )
-                if dataset is None or dataset in dataservice.datasets:
-                    continue
-                dataservice.datasets.append(dataset)
-            if not self.dryrun:
-                # FIXME: needed, or done by base?
-                dataservice.save()
 
     def store_graphs(self):
         # The official MongoDB document size in 16MB. The default value here is 15MB to account

@@ -2,7 +2,9 @@ from mongoengine import EmbeddedDocument
 from mongoengine.fields import DateTimeField, StringField
 
 from udata.api_fields import field
+from udata.core.owned import Owned
 from udata.mongo.url_field import URLField
+from udata.references import PendingReference, ReferenceKind
 
 
 class HarvestMetadata(EmbeddedDocument):
@@ -35,3 +37,26 @@ class HarvestMetadata(EmbeddedDocument):
 
     archived_at = field(DateTimeField())
     archived_reason = field(StringField())
+
+
+class Harvestable(Owned):
+    """Base class for the models that can be harvested."""
+
+    # Type annotation only: each concrete model declares its own `harvest` field.
+    harvest: HarvestMetadata
+
+    harvest_metadata_class: type[HarvestMetadata] = HarvestMetadata
+
+    def set_harvested(self):
+        if not self.harvest:
+            self.harvest = self.harvest_metadata_class()
+
+    def add_pending(self, reference: ReferenceKind, data) -> None:
+        pending = PendingReference(owner=self, kind=reference, data=data)
+        object.__setattr__(self, "_pending_references", self.pending_references() + [pending])
+
+    def pending_references(self):
+        try:
+            return object.__getattribute__(self, "_pending_references")
+        except AttributeError:
+            return []

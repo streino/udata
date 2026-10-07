@@ -244,6 +244,58 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         source.reload()
         assert len(source.get_last_job().items) == 1
 
+    def test_harvest_dataset_with_in_series(self, rmock):
+        """A dataset `dcat:inSeries` referencing another dataset in the same harvest must be
+        resolved and recorded on the child dataset's extras."""
+
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+
+        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
+        assert set(datasets) == {"series", "child"}
+
+        parent = datasets["series"]
+        child = datasets["child"]
+        assert child.extras["dcat"]["in_series"] == str(parent.id)
+
+    def test_harvest_dataset_in_series_unresolved(self, rmock):
+        """When the `dcat:inSeries` parent is not part of the harvest, nothing is recorded."""
+
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series-unresolved.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+
+        child = Dataset.objects(harvest__remote_id="child").first()
+        assert child is not None
+        assert "dcat" not in child.extras
+
+    def test_harvest_dataset_with_in_series_urn(self, rmock):
+        """Dataset using `dcat:inSeries` with a URN `rdf:resource` should resolve correctly."""
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series-urn.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+
+        # Child dataset has remote_id "child"
+        child = Dataset.objects(harvest__remote_id="child").first()
+        assert child is not None
+        # The resolver should have set the in_series extra to the parent's id (as a string)
+        assert "dcat" in child.extras
+        assert "in_series" in child.extras["dcat"]
+        parent_id = child.extras["dcat"]["in_series"]
+        # Verify that a dataset with that id exists
+        parent = Dataset.objects(id=parent_id).first()
+        assert parent is not None
+
     def test_harvest_dataservices_keep_attached_associated_datasets(self, rmock):
         """It should update the existing list of dataservice.datasets and not overwrite existing ones"""
 

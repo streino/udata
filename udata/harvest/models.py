@@ -74,7 +74,7 @@ DEFAULT_HARVEST_JOB_STATUS = "pending"
 DEFAULT_HARVEST_ITEM_STATUS = "pending"
 
 
-Harvestable = Dataset | Dataservice
+from udata.core.harvest import Harvestable  # noqa: E402  (re-export)
 
 
 @generate_fields()

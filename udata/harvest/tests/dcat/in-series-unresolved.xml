@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rdf:RDF
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:dcat="http://www.w3.org/ns/dcat#"
+  xmlns:dcterms="http://purl.org/dc/terms/"
+>
+  <dcat:Catalog rdf:about="http://data.test.org/">
+    <dcterms:title>Sample DCAT Catalog</dcterms:title>
+    <dcat:dataset>
+      <dcat:Dataset rdf:about="http://data.test.org/datasets/child">
+        <dcterms:title>Child dataset</dcterms:title>
+        <dcterms:identifier>child</dcterms:identifier>
+        <dcterms:description>Child description</dcterms:description>
+        <!-- The parent series is not part of this catalog: nothing to attach. -->
+        <dcat:inSeries rdf:resource="http://elsewhere.example.org/series"/>
+      </dcat:Dataset>
+    </dcat:dataset>
+  </dcat:Catalog>
+</rdf:RDF>
