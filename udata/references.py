@@ -98,6 +98,9 @@ class ReferenceKind:
 class PendingReference:
     """A reference collected on `owner` that is waiting for the end of the harvest run."""
 
-    owner: Any
+    owner: Any  # FIXME: Harvestable
     kind: ReferenceKind
     data: Any
+
+    def __repr__(self):
+        return f"Pending(owner={type(self.owner).__name__}({self.owner.id}), kind={self.kind.name}, data={self.data})"

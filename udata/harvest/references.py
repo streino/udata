@@ -12,9 +12,13 @@ machinery (`Reference`, `ReferenceKind`, `PendingReference`, `references_from_rd
 dependency-free leaf in `udata.references`.
 """
 
+import logging
 from collections import defaultdict
+from dataclasses import dataclass
 
 from udata.references import PendingReference, ReferenceKind
+
+log = logging.getLogger(__name__)
 
 
 class DatasetReferenceKind(ReferenceKind):
@@ -23,6 +27,7 @@ class DatasetReferenceKind(ReferenceKind):
     def index_keys(self, item):
         from udata.core.dataset.models import Dataset
 
+        log.info(f"REFS: index_keys: {item=}, {item.harvest=}")
         if not isinstance(item, Dataset) or item.harvest is None:
             return
         if item.harvest.remote_id:
@@ -50,6 +55,7 @@ class DatasetReferenceKind(ReferenceKind):
             target = registry.get(uri)
             if target is not None and target not in targets:
                 targets.append(target)
+        log.info(f"REFS: resolve: {targets=}")
         return targets
 
 
@@ -61,6 +67,7 @@ class ServesDatasetsKind(DatasetReferenceKind):
     def apply(self, resolver, owner, targets):
         for dataset in targets:
             if dataset not in owner.datasets:
+                log.info(f"REFS: apply: datasets += Dataset({dataset.id})")
                 owner.datasets.append(dataset)
         if not resolver.dryrun:
             owner.save()
@@ -77,6 +84,7 @@ class InSeriesKind(DatasetReferenceKind):
         parent = targets[0]
         from udata.core.dataset.rdf import set_dcat_extra
 
+        log.info(f"REFS: apply: extras.dcat.in_series = {str(parent.id)}")
         set_dcat_extra(owner, "in_series", str(parent.id))
         if not resolver.dryrun:
             owner.save()
@@ -84,6 +92,11 @@ class InSeriesKind(DatasetReferenceKind):
 
 SERVES_DATASETS = ServesDatasetsKind()
 IN_SERIES = InSeriesKind()
+
+
+@dataclass
+class FakeRef:
+    id: str
 
 
 class ReferenceResolver:
@@ -98,17 +111,34 @@ class ReferenceResolver:
         self._pending: dict[ReferenceKind, list[PendingReference]] = defaultdict(list)
 
     def register(self, item) -> None:
+        log.info(
+            f"REFS: register: item={type(item).__name__}({item.id}), pending={item.pending_references()}"
+        )
         self._items.append(item)
         for pending in item.pending_references():
             self._pending[pending.kind].append(pending)
 
     def resolve(self) -> None:
+        log.info("REFS: resolving...")
         for kind, pending_references in self._pending.items():
             registry = self._build_registry(kind)
+            log.info(f"REFS: resolve: kind={kind.name}, {registry=}")
             for pending in pending_references:
                 targets = kind.resolve(registry, pending.data)
                 if targets:
+                    log.info(
+                        f"REFS: resolve: kind={kind.name}, owner={type(pending.owner).__name__}({pending.owner.id}), {targets=}"
+                    )
                     kind.apply(self, pending.owner, targets)
+                elif (
+                    isinstance(kind, InSeriesKind)
+                    and (uri := pending.data.uris[0])
+                    and uri.startswith("urn:iso19139:parent:")
+                ):
+                    # FIXME: HACK!
+                    kind.apply(
+                        self, pending.owner, [FakeRef(uri.removeprefix("urn:iso19139:parent:"))]
+                    )
 
     def _build_registry(self, kind) -> dict:
         registry = {}

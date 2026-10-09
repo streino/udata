@@ -1,3 +1,5 @@
+import logging
+
 from mongoengine import EmbeddedDocument
 from mongoengine.fields import DateTimeField, StringField
 
@@ -5,6 +7,8 @@ from udata.api_fields import field
 from udata.core.owned import Owned
 from udata.mongo.url_field import URLField
 from udata.references import PendingReference, ReferenceKind
+
+log = logging.getLogger(__name__)
 
 
 class HarvestMetadata(EmbeddedDocument):
@@ -52,6 +56,7 @@ class Harvestable(Owned):
             self.harvest = self.harvest_metadata_class()
 
     def add_pending(self, reference: ReferenceKind, data) -> None:
+        log.info(f"REFS: add_pending: kind={reference.name}, {data=}")
         pending = PendingReference(owner=self, kind=reference, data=data)
         object.__setattr__(self, "_pending_references", self.pending_references() + [pending])
 
