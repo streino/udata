@@ -15,8 +15,8 @@ from udata.core.dataservices.models import Dataservice
 from udata.core.dataservices.rdf import dataservice_from_rdf
 from udata.core.dataset.models import Dataset
 from udata.core.dataset.rdf import dataset_from_rdf
+from udata.core.harvest import ReferenceResolver
 from udata.harvest.models import HarvestError, HarvestItem
-from udata.harvest.references import ReferenceResolver
 from udata.i18n import lazy_gettext as _
 from udata.rdf import (
     DCAT,

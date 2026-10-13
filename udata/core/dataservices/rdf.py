@@ -1,11 +1,12 @@
+import logging
+
 from flask import current_app
 from rdflib import RDF, BNode, Graph, Literal, Node, URIRef
 
 from udata.core.constants import HVD
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.models import Dataset, License
-from udata.core.dataset.rdf import dataset_to_graph_id, sanitize_html
-from udata.harvest.references import SERVES_DATASETS
+from udata.core.dataset.rdf import DatasetReference, dataset_to_graph_id, sanitize_html
 from udata.rdf import (
     CONTACT_POINT_ENTITY_TO_ROLE,
     DCAT,
@@ -23,7 +24,23 @@ from udata.rdf import (
     themes_from_rdf,
     url_from_rdf,
 )
-from udata.references import references_from_rdf
+
+log = logging.getLogger(__name__)
+
+
+class ServesDatasetsReference(DatasetReference):
+    """A dataservice serves one or more datasets (`dcat:servesDataset`)."""
+
+    predicate = DCAT.servesDataset
+
+    @classmethod
+    def apply(cls, resolver, owner, targets):
+        for dataset in targets:
+            if dataset not in owner.datasets:
+                log.info(f"REFS: apply: datasets += Dataset({dataset.id})")
+                owner.datasets.append(dataset)
+        if not resolver.dryrun:
+            owner.save()
 
 
 def dataservice_from_rdf(
@@ -79,9 +96,9 @@ def dataservice_from_rdf(
 
     dataservice.tags = themes_from_rdf(d)
 
-    serves = references_from_rdf(d, DCAT.servesDataset)
+    serves = ServesDatasetsReference.from_rdf(d)
     if serves.identifiers or serves.uris:
-        dataservice.add_pending(SERVES_DATASETS, serves)
+        dataservice.add_pending(serves)
 
     return dataservice
 

@@ -57,11 +57,14 @@ Harvested items are now built in two distinct phases:
 The two‑pass design guarantees that a reference can point to an object that appears later in the same catalog.
 
 ### Built‑in reference kinds
-- **`IN_SERIES`** – a dataset belongs to a series (`dcat:inSeries`). The parent series identifier is stored in `dataset.extras['dcat']['in_series']`.
-- **`SERVES_DATASETS`** – a dataservice serves one or more datasets (`dcat:servesDataset`). The relation is stored in `dataservice.datasets`.
+Reference kinds are `Reference` subclasses in `udata.core.harvest` (the base), with concrete
+implementations in the core modules (`udata.core.dataset.rdf`, `udata.core.dataservices.rdf`). Each
+subclass is its own kind, identified by its `predicate`:
+- **`InSeriesReference`** (`dcat:inSeries`) – a dataset belongs to a series. The parent series identifier is stored in `dataset.extras['dcat']['in_series']`.
+- **`ServesDatasetsReference`** (`dcat:servesDataset`) – a dataservice serves one or more datasets. The relation is stored in `dataservice.datasets`.
 
 ### Adding a new reference type
-When implementing a new harvest backend you can create a custom `ReferenceKind` subclass (see the *Extending udata* doc). Register a singleton instance (e.g. `MY_KIND = MyKind()`) and use `model.add_pending(MY_KIND, ref)` inside the RDF parser.
+When implementing a new harvest backend you can create a custom `Reference` subclass (see the *Extending udata* doc): set its `predicate` and implement `from_rdf`, `index_keys`, `resolve` and `apply`. Use `model.add_pending(ref)` inside the RDF parser.
 
 **Dry‑run behavior** – During a dry‑run the resolver still builds the registry and resolves references, but the final `save()` calls are skipped, letting you validate the whole graph without persisting anything.
 
