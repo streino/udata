@@ -276,8 +276,27 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         assert child is not None
         assert "dcat" not in child.extras
 
+    def test_harvest_dataset_with_in_series_resource(self, rmock):
+        """A `dcat:inSeries` referencing the parent by its resource URI (standard, e.g. GeoNetwork)
+        must resolve against the harvested parent's resource URI and be recorded on the child."""
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series-resource.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+
+        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
+        assert set(datasets) == {"http://data.test.org/api/records/parent-series", "child"}
+
+        parent = datasets["http://data.test.org/api/records/parent-series"]
+        child = datasets["child"]
+        # The parent carries no dct:identifier, so it is only reachable through its resource URI.
+        assert child.extras["dcat"]["in_series"] == str(parent.id)
+
     def test_harvest_dataset_with_in_series_urn(self, rmock):
-        """Dataset using `dcat:inSeries` with a URN `rdf:resource` should resolve correctly."""
+        """A `dcat:inSeries` referencing the parent by a `urn:iso19139:parent:<uuid>` URN must be
+        resolved against the parent record UUID (run-scoped, not persisted on the model)."""
         source = HarvestSourceFactory(
             backend="dcat",
             url=mock_dcat(rmock, "in-series-urn.xml"),
@@ -285,16 +304,16 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         )
         actions.run(source)
 
-        # Child dataset has remote_id "child"
-        child = Dataset.objects(harvest__remote_id="child").first()
-        assert child is not None
-        # The resolver should have set the in_series extra to the parent's id (as a string)
-        assert "dcat" in child.extras
-        assert "in_series" in child.extras["dcat"]
-        parent_id = child.extras["dcat"]["in_series"]
-        # Verify that a dataset with that id exists
-        parent = Dataset.objects(id=parent_id).first()
-        assert parent is not None
+        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
+        assert set(datasets) == {"series", "child"}
+
+        parent = datasets["series"]
+        child = datasets["child"]
+        # The resolver resolves the URN via the parent record UUID and records the parent's
+        # datagouv id (not the raw UUID).
+        assert child.extras["dcat"]["in_series"] == str(parent.id)
+        # The record UUID must not leak into the persisted model.
+        assert not hasattr(parent, "_remote_record_id")
 
     def test_harvest_dataservices_keep_attached_associated_datasets(self, rmock):
         """It should update the existing list of dataservice.datasets and not overwrite existing ones"""

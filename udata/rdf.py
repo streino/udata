@@ -564,36 +564,45 @@ def primary_topic_identifier_from_rdf(graph: Graph, resource: RdfResource):
         return graph.value(primary_topic, DCT.identifier)
 
 
+def record_identifier_from_rdf(graph: Graph, resource: RdfResource) -> str | None:
+    """
+    Extract the plain record ID from the `isPrimaryTopicOf`/`dct:identifier` of a resource.
+
+    Some ISO-19115-3 GeoNetwork templates set a codeSpace for the record ID (e.g. the
+    geodata-multilingual.xml template), meaning we have:
+    - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:code = the record ID,
+    - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:codeSpace = "urn:uuid".
+
+    That codeSpace ends up collapsed in the record dct:identifier. This means dct:identifier
+    differs (by the codeSpace) from the record ID that GeoNetwork uses internally. We strip the
+    "urn:uuid:" codeSpace when present so we can expose the raw record ID.
+
+    URN parsing rules depend on the namespace of the URN (urn:<namespace>:...), so there is no
+    generic way to extract the codeSpace. Here we only handle the "uuid" namespace (RFC-4122),
+    which is used in the wild by GeoNetwork (e.g. OFB, Sextant, and likely most future
+    ISO-19115-3 catalogs that use the default templates).
+
+    Note that the datatype == xsd:anyURI test is important. Some *ISO-19139* catalogs are
+    using "urn:...:" prefixes in their gmd:fileIdentifier (e.g. Geo2France), but ISO-19139 has
+    no concept of codeSpace, it's simply a string. So in ISO-19139, what looks like a "prefix"
+    is just an arbitrary part the plain string identifier, with no special meaning.
+    """
+    identifier = primary_topic_identifier_from_rdf(graph, resource)
+    if identifier is None:
+        return None
+    uuid_prefix = "urn:uuid:"
+    if identifier.datatype == XSD.anyURI and identifier.value.startswith(uuid_prefix):
+        return identifier.value[len(uuid_prefix) :]
+    return str(identifier)
+
+
 def remote_url_from_rdf(rdf: RdfResource, graph: Graph, remote_url_prefix: str | None = None):
     """
     Compute from `remote_url_prefix` if provided and primaryTopic identifier if found.
     Otherwise, use DCAT.landingPage if found and uri validation succeeds.
     In this latter case, use RDF identifier as fallback if uri validation succeeds.
     """
-    if remote_url_prefix and (identifier := primary_topic_identifier_from_rdf(graph, rdf)):
-        # Some ISO-19115-3 GeoNetwork templates set a codeSpace for the record ID (e.g. the
-        # geodata-multilingual.xml template), meaning we have:
-        # - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:code = the record ID,
-        # - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:codeSpace = "urn:uuid".
-        #
-        # That codeSpace ends up collapsed in the record dct:identifier. This means dct:identifier
-        # differs (by the codeSpace) from the record ID that GeoNetwork uses internally, including
-        # for its URLs. So we need to extract the original record ID from dct:identifier to build a
-        # valid remote_url.
-        #
-        # URN parsing rules depend on the namespace of the URN (urn:<namespace>:...), so there is no
-        # generic way to extract the codeSpace. Here we only handle the "uuid" namespace (RFC-4122),
-        # which is used in the wild by GeoNetwork (e.g. OFB, Sextant, and likely most future
-        # ISO-19115-3 catalogs that use the default templates).
-        #
-        # Note that the datatype == xsd:anyURI test is important. Some *ISO-19139* catalogs are
-        # using "urn:...:" prefixes in their gmd:fileIdentifier (e.g. Geo2France), but ISO-19139 has
-        # no concept of codeSpace, it's simply a string. So in ISO-19139, what looks like a "prefix"
-        # is just an arbitrary part the plain string identifier, with no special meaning.
-        uuid_prefix = "urn:uuid:"
-        if identifier.datatype == XSD.anyURI and identifier.value.startswith(uuid_prefix):
-            offset = len(uuid_prefix)
-            identifier = identifier.value[offset:]
+    if remote_url_prefix and (identifier := record_identifier_from_rdf(graph, rdf)):
         return f"{remote_url_prefix.rstrip('/')}/{identifier}"
 
     landing_page = url_from_rdf(rdf, DCAT.landingPage)

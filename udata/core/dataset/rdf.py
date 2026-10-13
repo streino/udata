@@ -56,6 +56,7 @@ from udata.rdf import (
     namespace_manager,
     rdf_unique_values,
     rdf_value,
+    record_identifier_from_rdf,
     remote_url_from_rdf,
     sanitize_html,
     schema_from_rdf,
@@ -1065,6 +1066,10 @@ def dataset_from_rdf(
     dataset.harvest.dct_identifier = identifier
     dataset.harvest.uri = uri
     dataset.harvest.remote_url = remote_url
+    # Transient attribute, not a model field: the record UUID only needs to live for the
+    # duration of a single harvest run so pending `urn:iso19139:parent:<uuid>` references
+    # can be resolved against it (see udata.harvest.references.ReferenceResolver).
+    dataset._remote_record_id = record_identifier_from_rdf(graph, d)
     dataset.harvest.created_at = created_at
     dataset.harvest.issued_at = issued_at
 

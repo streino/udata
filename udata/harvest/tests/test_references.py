@@ -26,13 +26,16 @@ DCAT = Namespace("http://www.w3.org/ns/dcat#")
 DCT = Namespace("http://purl.org/dc/terms/")
 
 
-def build_dataset(remote_id=None, uri=None) -> Dataset:
+def build_dataset(remote_id=None, uri=None, record_uuid=None) -> Dataset:
     harvest = {}
     if remote_id:
         harvest["remote_id"] = remote_id
     if uri:
         harvest["uri"] = uri
-    return Dataset(harvest=harvest)
+    dataset = Dataset(harvest=harvest)
+    if record_uuid:
+        dataset._remote_record_id = record_uuid
+    return dataset
 
 
 class ReferencesFromRdfTest:
@@ -46,6 +49,19 @@ class ReferencesFromRdfTest:
 
         assert reference.identifiers == []
         assert reference.uris == ["http://ex/dataset/1"]
+
+    def test_resource_reference_without_identifier_is_a_uri(self):
+        """A `dcat:inSeries` object that is a plain resource URI (no dct:identifier on the node)
+        must be recorded as a URI, not an identifier."""
+        graph = Graph()
+        node = URIRef("http://ex/child")
+        parent = URIRef("http://ex/api/records/parent")
+        graph.add((node, DCAT.inSeries, parent))
+
+        reference = references_from_rdf(graph.resource(node), DCAT.inSeries)
+
+        assert reference.identifiers == []
+        assert reference.uris == ["http://ex/api/records/parent"]
 
     def test_mixed_and_empty(self):
         graph = Graph()
@@ -132,6 +148,30 @@ class DatasetReferenceKindTest:
 
         assert targets == [d1]
 
+    def test_resolve_by_resource_uri(self):
+        """A standard resource reference (parent reachable only through its resource URI, no
+        dct:identifier) resolves against the harvested parent's `harvest.uri`."""
+        parent = build_dataset(uri="http://ex/api/records/parent")
+        registry = {"http://ex/api/records/parent": parent}
+
+        targets = DatasetReferenceKind().resolve(
+            registry, Reference(identifiers=[], uris=["http://ex/api/records/parent"])
+        )
+
+        assert targets == [parent]
+
+    def test_resolve_resource_uri_unknown(self):
+        """An unknown resource URI yields no target (and must not fall through to the record
+        reference branch, which only handles `urn:iso19139:*` URIs)."""
+        parent = build_dataset(uri="http://ex/api/records/parent", record_uuid="12345")
+        registry = {"http://ex/api/records/parent": parent, "12345": parent}
+
+        targets = DatasetReferenceKind().resolve(
+            registry, Reference(identifiers=[], uris=["http://ex/api/records/other"])
+        )
+
+        assert targets == []
+
     def test_resolve_dedups(self):
         d1 = build_dataset(remote_id="1", uri="http://ex/1")
         registry = {"1": d1, "http://ex/1": d1}
@@ -146,6 +186,28 @@ class DatasetReferenceKindTest:
         registry = {"1": build_dataset(remote_id="1")}
 
         targets = DatasetReferenceKind().resolve(registry, Reference(identifiers=["nope"], uris=[]))
+
+        assert targets == []
+
+    def test_resolve_by_iso19139_parent_urn(self):
+        """A `urn:iso19139:parent:<uuid>` URI resolves to the dataset carrying that record UUID."""
+        parent = build_dataset(remote_id="series", record_uuid="12345")
+        registry = {"series": parent, "12345": parent}
+
+        targets = DatasetReferenceKind().resolve(
+            registry, Reference(identifiers=[], uris=["urn:iso19139:parent:12345"])
+        )
+
+        assert targets == [parent]
+
+    def test_resolve_iso19139_parent_urn_unknown_uuid(self):
+        """An unresolvable `urn:iso19139:parent:<uuid>` URI yields no target."""
+        parent = build_dataset(remote_id="series", record_uuid="12345")
+        registry = {"series": parent, "12345": parent}
+
+        targets = DatasetReferenceKind().resolve(
+            registry, Reference(identifiers=[], uris=["urn:iso19139:parent:unknown"])
+        )
 
         assert targets == []
 
@@ -274,3 +336,37 @@ class ReferenceResolverTest:
         resolver.resolve()
 
         assert source.resolved == ["d1"]
+
+    def test_register_captures_record_uuid_and_resolves_urn(self):
+        """The resolver registers the run-scoped record UUID and resolves `urn:iso19139:parent:`
+        references against it end-to-end."""
+        parent = build_dataset(remote_id="series", record_uuid="12345")
+        child = build_dataset(remote_id="child")
+        child.add_pending(IN_SERIES, Reference(identifiers=[], uris=["urn:iso19139:parent:12345"]))
+        parent.id = "parent_id"
+
+        resolver = ReferenceResolver(dryrun=True)
+        resolver.register(parent)
+        resolver.register(child)
+        resolver.resolve()
+
+        assert resolver._record_uuids == {"12345": parent}
+        assert child.extras["dcat"]["in_series"] == "parent_id"
+
+    def test_resolve_standard_resource_reference_end_to_end(self):
+        """A standard (GeoNetwork-style) `dcat:inSeries` resource reference — parent reachable
+        only through its resource URI — resolves end-to-end without any record UUID mapping."""
+        parent = build_dataset(uri="http://ex/api/records/parent")
+        child = build_dataset(remote_id="child")
+        child.add_pending(
+            IN_SERIES, Reference(identifiers=[], uris=["http://ex/api/records/parent"])
+        )
+        parent.id = "parent_id"
+
+        resolver = ReferenceResolver(dryrun=True)
+        resolver.register(parent)
+        resolver.register(child)
+        resolver.resolve()
+
+        assert child.extras["dcat"]["in_series"] == "parent_id"
+        assert resolver._record_uuids == {}
