@@ -80,8 +80,8 @@ class ReferencesFromRdfTest:
         assert empty_id == []
         assert empty_uris == []
 
-    def test_inline_ignored_with_warning(self, caplog):
-        """Inline `dcat:Dataset` (no rdf:resource) should be ignored and a warning logged."""
+    def test_inline_blank_node_with_identifier_captured(self, caplog):
+        """An inline blank node carrying a `dct:identifier` is treated leniently as an identifier."""
         graph = Graph()
         node = URIRef("http://ex/service")
         inline = BNode()
@@ -89,12 +89,12 @@ class ReferencesFromRdfTest:
         graph.add((inline, DCT.identifier, Literal("ignored")))
         with caplog.at_level(logging.WARNING):
             identifiers, uris = ServesDatasetRelation.from_rdf(graph.resource(node))
-        assert identifiers == []
+        assert identifiers == ["ignored"]
         assert uris == []
-        assert any("Ignoring inline" in rec.message for rec in caplog.records)
+        assert not any("Ignoring inline" in rec.message for rec in caplog.records)
 
-    def test_blank_node_ignored_with_warning(self, caplog):
-        """A blank node without rdf:resource should also be ignored with a warning."""
+    def test_blank_node_without_identifier_ignored_with_warning(self, caplog):
+        """A blank node without a `dct:identifier` (and no rdf:resource) is ignored with a warning."""
         graph = Graph()
         node = URIRef("http://ex/service")
         blank = BNode()
@@ -104,6 +104,17 @@ class ReferencesFromRdfTest:
         assert identifiers == []
         assert uris == []
         assert any("Ignoring inline" in rec.message for rec in caplog.records)
+
+    def test_literal_value_captured_as_identifier(self, caplog):
+        """A literal object is treated leniently as an identifier."""
+        graph = Graph()
+        node = URIRef("http://ex/service")
+        graph.add((node, DCAT.servesDataset, Literal("urn:iso19139:parent:12345")))
+        with caplog.at_level(logging.WARNING):
+            identifiers, uris = ServesDatasetRelation.from_rdf(graph.resource(node))
+        assert identifiers == ["urn:iso19139:parent:12345"]
+        assert uris == []
+        assert not any("Ignoring inline" in rec.message for rec in caplog.records)
 
 
 class DatasetRelationTest:

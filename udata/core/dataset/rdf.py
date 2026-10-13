@@ -89,41 +89,39 @@ class DatasetRelation(PendingRelation[Dataset]):
     """A cross-reference whose target is a harvested `Dataset` (e.g. `dcat:inSeries`)."""
 
     @classmethod
-    # FIXME[series]: why ignore inline elements?
     def from_rdf(cls, node: RdfResource) -> tuple[list[str], list[str]]:
-        """Collect the URIs of the objects of `cls.predicate` on an rdflib `Resource`.
+        """Collect the reference targets of `cls.predicate` on an rdflib `Resource`.
 
-        Only `rdf:resource` URIs are processed. Inline `dcat:Dataset` elements (e.g. with
-        a `dct:identifier` but no `rdf:resource`) are ignored and a warning is emitted.
+        Lenient parsing: the object of `cls.predicate` is normally a `rdf:resource` URI
+        (referenced by its `dct:identifier` when present, otherwise by the URI itself). Because
+        a lot of published DCAT is poorly formed, we also accept literal values and inline
+        blank nodes (via their `dct:identifier`). Blank nodes without an identifier are ignored
+        with a warning.
+
+        Returns a `(identifiers, uris)` tuple; if any plain URI references are collected,
+        identifiers are ignored.
         """
         identifiers: list[str] = []
         uris: list[str] = []
 
-        # FIXME[series]: use rdf_value?
         for obj in node.objects(cls.predicate):
-            # ``obj`` is a ``rdflib.resource.Resource``. Its ``identifier`` attribute holds the actual node.
-            identifier_node = getattr(obj, "identifier", None)
-            if identifier_node is None:
-                # Unexpected case – log and skip.
-                log.warning(
-                    "Ignoring inline %s reference – only rdf:resource is supported", cls.predicate
-                )
+            # Lenient: treat literal values as identifiers.
+            if isinstance(obj, Literal):
+                identifiers.append(str(obj))
                 continue
-            # If the underlying identifier is a blank node, treat as an inline definition and ignore.
-            if isinstance(identifier_node, BNode):
-                log.warning(
-                    "Ignoring inline %s reference – only rdf:resource is supported", cls.predicate
-                )
-                continue
-            # At this point ``identifier_node`` is a URIRef.
-            # Look for a ``dct:identifier`` triple on that node.
-            dct_id = node.graph.value(subject=identifier_node, predicate=DCT.identifier)
+            # ``obj`` is an ``rdflib.resource.Resource`` (a URIRef or a blank node).
+            dct_id = obj.value(DCT.identifier)
             if dct_id is not None:
                 identifiers.append(str(dct_id))
                 continue
-            # No ``dct:identifier`` – treat as a plain ``rdf:resource`` URI.
-            uris.append(str(identifier_node))
+            if isinstance(obj.identifier, BNode):
+                # Inline blank node without an identifier – no usable reference.
+                log.warning("Ignoring inline %s reference – no dct:identifier", cls.predicate)
+                continue
+            # Plain `rdf:resource` URI.
+            uris.append(str(obj.identifier))
 
+        # FIXME[series]: reconsider uris/identifiers split
         # If any plain URI references were collected, identifiers should be ignored.
         if uris:
             identifiers = []
