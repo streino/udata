@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 
 from flask import current_app
 from rdflib import RDF, BNode, Graph, Literal, Node, URIRef
@@ -7,6 +8,7 @@ from udata.core.constants import HVD
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.models import Dataset, License
 from udata.core.dataset.rdf import DatasetRelation, dataset_to_graph_id, sanitize_html
+from udata.core.harvest import RelationResolver
 from udata.rdf import (
     CONTACT_POINT_ENTITY_TO_ROLE,
     DCAT,
@@ -33,7 +35,7 @@ class ServesDatasetRelation(DatasetRelation):
 
     predicate = DCAT.servesDataset
 
-    def apply(self, resolver, targets):
+    def apply(self, resolver: RelationResolver, targets: Sequence[Dataset]) -> None:
         for dataset in targets:
             if dataset not in self.owner.datasets:
                 log.info(f"REFS: apply: datasets += Dataset({dataset.id})")

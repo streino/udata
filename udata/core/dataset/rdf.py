@@ -5,7 +5,7 @@ This module centralize dataset helpers for RDF/DCAT serialization and parsing
 import calendar
 import json
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Iterator, Sequence
 from datetime import UTC, date, datetime
 from fractions import Fraction
 from itertools import chain
@@ -22,7 +22,7 @@ from udata import i18n, uris
 from udata.core.access_type.constants import AccessType, InspireLimitationCategory
 from udata.core.constants import HVD
 from udata.core.dataset.models import HarvestResourceMetadata
-from udata.core.harvest import PendingRelation
+from udata.core.harvest import Harvestable, PendingRelation, RelationResolver
 from udata.core.spatial.models import SpatialCoverage
 from udata.harvest.exceptions import HarvestSkipException
 from udata.mongo.datetime_fields import DateRange
@@ -85,12 +85,12 @@ log = logging.getLogger(__name__)
 ISO19139_URN_PREFIX = "urn:iso19139:"
 
 
-class DatasetRelation(PendingRelation):
+class DatasetRelation(PendingRelation[Dataset]):
     """A cross-reference whose target is a harvested `Dataset` (e.g. `dcat:inSeries`)."""
 
     @classmethod
     # FIXME[series]: why ignore inline elements?
-    def from_rdf(cls, node):
+    def from_rdf(cls, node: RdfResource) -> tuple[list[str], list[str]]:
         """Collect the URIs of the objects of `cls.predicate` on an rdflib `Resource`.
 
         Only `rdf:resource` URIs are processed. Inline `dcat:Dataset` elements (e.g. with
@@ -131,7 +131,7 @@ class DatasetRelation(PendingRelation):
         return identifiers, uris
 
     @classmethod
-    def lookup_keys(cls, item):
+    def lookup_keys(cls, item: Harvestable) -> Iterator[str]:
         log.info(f"REFS: lookup_keys: {item=}, {item.harvest=}")
         if not isinstance(item, Dataset) or item.harvest is None:
             return
@@ -140,7 +140,7 @@ class DatasetRelation(PendingRelation):
         if item.harvest.uri:
             yield item.harvest.uri
 
-    def resolve(self, registry):
+    def resolve(self, registry: dict[str, Harvestable]) -> Sequence[Dataset]:
         targets = []
 
         # Form 1 — resource reference (standard, e.g. GeoNetwork): the predicate object is the
@@ -186,7 +186,7 @@ class InSeriesRelation(DatasetRelation):
 
     predicate = DCAT.inSeries
 
-    def apply(self, resolver, targets):
+    def apply(self, resolver: RelationResolver, targets: Sequence[Dataset]) -> None:
         if not targets:
             return
         parent = targets[0]
