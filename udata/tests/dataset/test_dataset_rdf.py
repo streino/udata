@@ -71,7 +71,7 @@ from udata.rdf import (
     TAG_TO_EU_HVD_CATEGORIES,
     VCARD,
     default_lang_value,
-    primary_topic_identifier_from_rdf,
+    record_identifier_from_rdf,
     remote_url_from_rdf,
     slugify_tag,
 )
@@ -1611,7 +1611,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         assert resource.title == title
         assert resource.description == description
 
-    def test_primary_topic_identifier_from_rdf_outer(self):
+    def test_record_identifier_from_rdf_outer(self):
         """Check that a CatalogRecord node that is primaryTopic of a dataset is found and parsed"""
         node = BNode()
         g = Graph()
@@ -1624,10 +1624,10 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((primary_topic_node, DCT.identifier, Literal("primary-topic-identifier")))
         g.add((primary_topic_node, FOAF.primaryTopic, node))
 
-        pti = primary_topic_identifier_from_rdf(g, g.resource(node))
-        assert pti == Literal("primary-topic-identifier")
+        rid = record_identifier_from_rdf(g, g.resource(node))
+        assert rid == "primary-topic-identifier"
 
-    def test_primary_topic_identifier_from_rdf_inner(self):
+    def test_record_identifier_from_rdf_inner(self):
         """Check that a nested isPrimaryTopicOf of a dataset is found and parsed"""
         node = BNode()
         g = Graph()
@@ -1641,8 +1641,8 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
 
         g.add((node, FOAF.isPrimaryTopicOf, primary_topic_node))
 
-        pti = primary_topic_identifier_from_rdf(g, g.resource(node))
-        assert pti == Literal("primary-topic-identifier")
+        rid = record_identifier_from_rdf(g, g.resource(node))
+        assert rid == "primary-topic-identifier"
 
     def test_remote_url_from_rdf_urnuuid_iso191153(self):
         """

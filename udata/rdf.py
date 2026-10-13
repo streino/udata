@@ -148,6 +148,8 @@ INSPIRE_GEMET_SCHEME_URIS = [
     "http://www.eionet.europa.eu/gemet/inspire_themes",
 ]
 
+URN_UUID_PREFIX = "urn:uuid:"
+
 AGENT_ROLE_TO_RDF_PREDICATE = {
     "contact": DCAT.contactPoint,
     "creator": DCT.creator,
@@ -548,26 +550,15 @@ def contact_points_to_rdf(contacts, graph=None):
         yield node, role
 
 
-# FIXME[series]: merge in record_identifier_from_rdf?
-def primary_topic_identifier_from_rdf(graph: Graph, resource: RdfResource):
-    """
-    Extract the dct:identifier from a primaryTopic of a RdfResource `resource` via an RDF `graph`.
-    The primary topic might be identified by a FOAF:isPrimaryTopicOf from the Resource, or by a FOAF:primaryTopic to the Resource.
-    In DCAT, the primary topic should be a unique CatalogRecord (if any), but nothing here prevents it to be something else.
-    """
-    # look for "inner" primaryTopic linking to Dataset via isPrimaryTopicOf
-    is_primary_topic_of = graph.value(subject=resource.identifier, predicate=FOAF.isPrimaryTopicOf)
-    if is_primary_topic_of:
-        return graph.value(is_primary_topic_of, DCT.identifier)
-    # look for "outer" primaryTopic linking to Dataset via primaryTopic
-    primary_topic = graph.value(predicate=FOAF.primaryTopic, object=resource.identifier)
-    if primary_topic:
-        return graph.value(primary_topic, DCT.identifier)
-
-
 def record_identifier_from_rdf(graph: Graph, resource: RdfResource) -> str | None:
     """
     Extract the plain record ID from the `isPrimaryTopicOf`/`dct:identifier` of a resource.
+
+    The record's `dct:identifier` is looked up through its primary topic: either an inner
+    `FOAF:isPrimaryTopicOf` on the resource pointing to the CatalogRecord, or an outer
+    `FOAF:primaryTopic` from the CatalogRecord back to the resource. In DCAT, the primary topic
+    should be a unique CatalogRecord (if any), but nothing here prevents it from being something
+    else.
 
     Some ISO-19115-3 GeoNetwork templates set a codeSpace for the record ID (e.g. the
     geodata-multilingual.xml template), meaning we have:
@@ -588,14 +579,16 @@ def record_identifier_from_rdf(graph: Graph, resource: RdfResource) -> str | Non
     no concept of codeSpace, it's simply a string. So in ISO-19139, what looks like a "prefix"
     is just an arbitrary part the plain string identifier, with no special meaning.
     """
-    identifier = primary_topic_identifier_from_rdf(graph, resource)
+    is_primary_topic_of = graph.value(subject=resource.identifier, predicate=FOAF.isPrimaryTopicOf)
+    if is_primary_topic_of:
+        identifier = graph.value(is_primary_topic_of, DCT.identifier)
+    else:
+        primary_topic = graph.value(predicate=FOAF.primaryTopic, object=resource.identifier)
+        identifier = graph.value(primary_topic, DCT.identifier) if primary_topic else None
     if identifier is None:
         return None
-    # FIXME[series]: why uuid_prefix?
-    # FIXME[series]: extract constant
-    uuid_prefix = "urn:uuid:"
-    if identifier.datatype == XSD.anyURI and identifier.value.startswith(uuid_prefix):
-        return identifier.value[len(uuid_prefix) :]
+    if identifier.datatype == XSD.anyURI and identifier.value.startswith(URN_UUID_PREFIX):
+        return identifier.value[len(URN_UUID_PREFIX) :]
     return str(identifier)
 
 
