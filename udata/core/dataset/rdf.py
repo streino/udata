@@ -128,7 +128,7 @@ class DatasetRelation(PendingRelation):
         if uris:
             identifiers = []
 
-        return cls(identifiers=identifiers, uris=uris)
+        return identifiers, uris
 
     @classmethod
     def lookup_keys(cls, item):
@@ -1203,9 +1203,7 @@ def dataset_from_rdf(
         modified_at, "DCT.modified (dataset)", refuse_future=True
     )
 
-    in_series = InSeriesRelation.from_rdf(d)
-    if in_series.identifiers or in_series.uris:
-        dataset.add_pending_relation(in_series)
+    dataset.add_pending_relation(InSeriesRelation, d)
 
     return dataset
 

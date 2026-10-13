@@ -95,9 +95,7 @@ def dataservice_from_rdf(
 
     dataservice.tags = themes_from_rdf(d)
 
-    serves = ServesDatasetRelation.from_rdf(d)
-    if serves.identifiers or serves.uris:
-        dataservice.add_pending_relation(serves)
+    dataservice.add_pending_relation(ServesDatasetRelation, d)
 
     return dataservice
 

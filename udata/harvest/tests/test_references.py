@@ -41,10 +41,10 @@ class ReferencesFromRdfTest:
         target = URIRef("http://ex/dataset/1")
         graph.add((node, DCAT.servesDataset, target))
 
-        reference = ServesDatasetRelation.from_rdf(graph.resource(node))
+        identifiers, uris = ServesDatasetRelation.from_rdf(graph.resource(node))
 
-        assert reference.identifiers == []
-        assert reference.uris == ["http://ex/dataset/1"]
+        assert identifiers == []
+        assert uris == ["http://ex/dataset/1"]
 
     def test_resource_reference_without_identifier_is_a_uri(self):
         """A `dcat:inSeries` object that is a plain resource URI (no dct:identifier on the node)
@@ -54,10 +54,10 @@ class ReferencesFromRdfTest:
         parent = URIRef("http://ex/api/records/parent")
         graph.add((node, DCAT.inSeries, parent))
 
-        reference = InSeriesRelation.from_rdf(graph.resource(node))
+        identifiers, uris = InSeriesRelation.from_rdf(graph.resource(node))
 
-        assert reference.identifiers == []
-        assert reference.uris == ["http://ex/api/records/parent"]
+        assert identifiers == []
+        assert uris == ["http://ex/api/records/parent"]
 
     def test_mixed_and_empty(self):
         graph = Graph()
@@ -68,15 +68,17 @@ class ReferencesFromRdfTest:
         graph.add((node, DCAT.servesDataset, by_uri))
         graph.add((by_id, DCT.identifier, Literal("A")))
 
-        reference = ServesDatasetRelation.from_rdf(graph.resource(node))
+        identifiers, uris = ServesDatasetRelation.from_rdf(graph.resource(node))
 
         # Inline identifier should be ignored; only the URI should be collected.
-        assert reference.identifiers == []
-        assert reference.uris == ["http://ex/b"]
+        assert identifiers == []
+        assert uris == ["http://ex/b"]
 
-        empty = ServesDatasetRelation.from_rdf(graph.resource(URIRef("http://ex/other")))
-        assert empty.identifiers == []
-        assert empty.uris == []
+        empty_id, empty_uris = ServesDatasetRelation.from_rdf(
+            graph.resource(URIRef("http://ex/other"))
+        )
+        assert empty_id == []
+        assert empty_uris == []
 
     def test_inline_ignored_with_warning(self, caplog):
         """Inline `dcat:Dataset` (no rdf:resource) should be ignored and a warning logged."""
@@ -86,9 +88,9 @@ class ReferencesFromRdfTest:
         graph.add((node, DCAT.servesDataset, inline))
         graph.add((inline, DCT.identifier, Literal("ignored")))
         with caplog.at_level(logging.WARNING):
-            ref = ServesDatasetRelation.from_rdf(graph.resource(node))
-        assert ref.identifiers == []
-        assert ref.uris == []
+            identifiers, uris = ServesDatasetRelation.from_rdf(graph.resource(node))
+        assert identifiers == []
+        assert uris == []
         assert any("Ignoring inline" in rec.message for rec in caplog.records)
 
     def test_blank_node_ignored_with_warning(self, caplog):
@@ -98,9 +100,9 @@ class ReferencesFromRdfTest:
         blank = BNode()
         graph.add((node, DCAT.servesDataset, blank))  # no rdf:resource, no identifier
         with caplog.at_level(logging.WARNING):
-            ref = ServesDatasetRelation.from_rdf(graph.resource(node))
-        assert ref.identifiers == []
-        assert ref.uris == []
+            identifiers, uris = ServesDatasetRelation.from_rdf(graph.resource(node))
+        assert identifiers == []
+        assert uris == []
         assert any("Ignoring inline" in rec.message for rec in caplog.records)
 
 
@@ -120,7 +122,7 @@ class DatasetRelationTest:
         d2 = build_dataset(remote_id="2")
         registry = {"1": d1, "2": d2}
 
-        targets = InSeriesRelation(identifiers=["2"], uris=[]).resolve(registry)
+        targets = InSeriesRelation(identifiers=["2"], uris=[], owner=_FakeOwner()).resolve(registry)
 
         assert targets == [d2]
 
@@ -128,7 +130,7 @@ class DatasetRelationTest:
         d1 = build_dataset(remote_id="http://data.test.org/1")
         registry = {"http://data.test.org/1": d1}
 
-        targets = InSeriesRelation(identifiers=["1"], uris=[]).resolve(registry)
+        targets = InSeriesRelation(identifiers=["1"], uris=[], owner=_FakeOwner()).resolve(registry)
 
         assert targets == [d1]
 
@@ -136,7 +138,9 @@ class DatasetRelationTest:
         d1 = build_dataset(uri="http://ex/1")
         registry = {"http://ex/1": d1}
 
-        targets = InSeriesRelation(identifiers=[], uris=["http://ex/1"]).resolve(registry)
+        targets = InSeriesRelation(
+            identifiers=[], uris=["http://ex/1"], owner=_FakeOwner()
+        ).resolve(registry)
 
         assert targets == [d1]
 
@@ -146,9 +150,9 @@ class DatasetRelationTest:
         parent = build_dataset(uri="http://ex/api/records/parent")
         registry = {"http://ex/api/records/parent": parent}
 
-        targets = InSeriesRelation(identifiers=[], uris=["http://ex/api/records/parent"]).resolve(
-            registry
-        )
+        targets = InSeriesRelation(
+            identifiers=[], uris=["http://ex/api/records/parent"], owner=_FakeOwner()
+        ).resolve(registry)
 
         assert targets == [parent]
 
@@ -158,9 +162,9 @@ class DatasetRelationTest:
         parent = build_dataset(uri="http://ex/api/records/parent", record_uuid="12345")
         registry = {"http://ex/api/records/parent": parent, "12345": parent}
 
-        targets = InSeriesRelation(identifiers=[], uris=["http://ex/api/records/other"]).resolve(
-            registry
-        )
+        targets = InSeriesRelation(
+            identifiers=[], uris=["http://ex/api/records/other"], owner=_FakeOwner()
+        ).resolve(registry)
 
         assert targets == []
 
@@ -168,14 +172,18 @@ class DatasetRelationTest:
         d1 = build_dataset(remote_id="1", uri="http://ex/1")
         registry = {"1": d1, "http://ex/1": d1}
 
-        targets = InSeriesRelation(identifiers=["1"], uris=["http://ex/1"]).resolve(registry)
+        targets = InSeriesRelation(
+            identifiers=["1"], uris=["http://ex/1"], owner=_FakeOwner()
+        ).resolve(registry)
 
         assert targets == [d1]
 
     def test_resolve_unknown_returns_empty(self):
         registry = {"1": build_dataset(remote_id="1")}
 
-        targets = InSeriesRelation(identifiers=["nope"], uris=[]).resolve(registry)
+        targets = InSeriesRelation(identifiers=["nope"], uris=[], owner=_FakeOwner()).resolve(
+            registry
+        )
 
         assert targets == []
 
@@ -184,9 +192,9 @@ class DatasetRelationTest:
         parent = build_dataset(remote_id="series", record_uuid="12345")
         registry = {"series": parent, "12345": parent}
 
-        targets = InSeriesRelation(identifiers=[], uris=["urn:iso19139:parent:12345"]).resolve(
-            registry
-        )
+        targets = InSeriesRelation(
+            identifiers=[], uris=["urn:iso19139:parent:12345"], owner=_FakeOwner()
+        ).resolve(registry)
 
         assert targets == [parent]
 
@@ -195,9 +203,9 @@ class DatasetRelationTest:
         parent = build_dataset(remote_id="series", record_uuid="12345")
         registry = {"series": parent, "12345": parent}
 
-        targets = InSeriesRelation(identifiers=[], uris=["urn:iso19139:parent:unknown"]).resolve(
-            registry
-        )
+        targets = InSeriesRelation(
+            identifiers=[], uris=["urn:iso19139:parent:unknown"], owner=_FakeOwner()
+        ).resolve(registry)
 
         assert targets == []
 
@@ -268,12 +276,18 @@ class InSeriesKindTest:
         assert "dcat" not in child.extras
 
 
+class _FakeNode:
+    def __init__(self, identifiers=None, uris=None):
+        self.identifiers = identifiers or []
+        self.uris = uris or []
+
+
 class _FakeRef(PendingRelation):
     predicate = URIRef("http://ex/fake")
 
     @classmethod
     def from_rdf(cls, node):
-        return cls(identifiers=[], uris=[])
+        return list(node.identifiers), list(node.uris)
 
     @classmethod
     def lookup_keys(cls, item):
@@ -291,8 +305,11 @@ class _FakeItem:
         self.key = key
         self._pending = []
 
-    def add_pending_relation(self, relation):
-        relation.owner = self
+    def add_pending_relation(self, relation_cls, node):
+        identifiers, uris = relation_cls.from_rdf(node)
+        if not identifiers and not uris:
+            return
+        relation = relation_cls(identifiers=identifiers, uris=uris, owner=self)
         self._pending.append(relation)
 
     def pending_relations(self):
@@ -302,7 +319,7 @@ class _FakeItem:
 class RelationResolverTest:
     def test_register_collects_pending_and_resolves(self):
         source = _FakeItem("service")
-        source.add_pending_relation(_FakeRef(identifiers=["d1", "d2"], uris=[]))
+        source.add_pending_relation(_FakeRef, _FakeNode(identifiers=["d1", "d2"]))
         target1 = _FakeItem("d1")
         target2 = _FakeItem("d2")
 
@@ -323,7 +340,7 @@ class RelationResolverTest:
 
     def test_resolve_unknown_target_is_skipped(self):
         source = _FakeItem("service")
-        source.add_pending_relation(_FakeRef(identifiers=["d1", "nope"], uris=[]))
+        source.add_pending_relation(_FakeRef, _FakeNode(identifiers=["d1", "nope"]))
         target1 = _FakeItem("d1")
 
         resolver = RelationResolver(dryrun=True)
@@ -338,9 +355,9 @@ class RelationResolverTest:
         references against it end-to-end."""
         parent = build_dataset(remote_id="series", record_uuid="12345")
         child = build_dataset(remote_id="child")
-        child.add_pending_relation(
-            InSeriesRelation(identifiers=[], uris=["urn:iso19139:parent:12345"])
-        )
+        graph = Graph()
+        graph.add((URIRef("http://ex/child"), DCAT.inSeries, URIRef("urn:iso19139:parent:12345")))
+        child.add_pending_relation(InSeriesRelation, graph.resource(URIRef("http://ex/child")))
         parent.id = "parent_id"
 
         resolver = RelationResolver(dryrun=True)
@@ -356,9 +373,11 @@ class RelationResolverTest:
         only through its resource URI — resolves end-to-end without any record UUID mapping."""
         parent = build_dataset(uri="http://ex/api/records/parent")
         child = build_dataset(remote_id="child")
-        child.add_pending_relation(
-            InSeriesRelation(identifiers=[], uris=["http://ex/api/records/parent"])
+        graph = Graph()
+        graph.add(
+            (URIRef("http://ex/child"), DCAT.inSeries, URIRef("http://ex/api/records/parent"))
         )
+        child.add_pending_relation(InSeriesRelation, graph.resource(URIRef("http://ex/child")))
         parent.id = "parent_id"
 
         resolver = RelationResolver(dryrun=True)

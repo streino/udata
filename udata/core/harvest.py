@@ -48,12 +48,13 @@ class HarvestMetadata(EmbeddedDocument):
 
 
 # FIXME[series]: improve comments
-@dataclass
+@dataclass(frozen=True)
 class PendingRelation(ABC):
     """A cross-reference between harvested items awaiting resolution; the subclass is its own kind.
 
-    `owner` is the harvested item this relation was collected on; it is set by
-    `Harvestable.add_pending_relation()` once the relation is attached to its owner.
+    `owner` is the harvested item this relation was collected on; it is provided by
+    `Harvestable.add_pending_relation()`, which constructs the relation already attached to its
+    owner.
     """
 
     # `dct:identifier` values collected from the predicate objects, matched against the
@@ -64,14 +65,15 @@ class PendingRelation(ABC):
     # target's harvested `harvest.uri`.
     uris: list[str]
 
-    owner: "Harvestable | None" = None
+    owner: "Harvestable"
 
     predicate: ClassVar[Node]
 
     @classmethod
     @abstractmethod
     def from_rdf(cls, node):
-        """Collect the relation data from the objects of `cls.predicate` on an rdflib `Resource`."""
+        """Collect the `(identifiers, uris)` for the relation from the objects of `cls.predicate`
+        on an rdflib `Resource`."""
         raise NotImplementedError
 
     @classmethod
@@ -113,9 +115,12 @@ class Harvestable(Owned):
             self.harvest = self.harvest_metadata_class()
 
     # FIXME[series]: avoid __setattr__/__getattribute__?
-    def add_pending_relation(self, relation: PendingRelation) -> None:
+    def add_pending_relation(self, relation_cls, node) -> None:
+        identifiers, uris = relation_cls.from_rdf(node)
+        if not identifiers and not uris:
+            return
+        relation = relation_cls(identifiers=identifiers, uris=uris, owner=self)
         log.info(f"REFS: add_pending_relation: relation={type(relation).__name__}, {relation=}")
-        relation.owner = self
         object.__setattr__(self, "_pending_references", self.pending_relations() + [relation])
 
     def pending_relations(self):
