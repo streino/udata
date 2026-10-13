@@ -326,13 +326,12 @@ class Dataservice(
         ),
     )
 
+    harvest_metadata_class = HarvestDataserviceMetadata
     harvest = field(
         EmbeddedDocumentField(HarvestDataserviceMetadata),
         readonly=True,
         auditable=False,
     )
-
-    harvest_metadata_class = HarvestDataserviceMetadata
 
     @field(description="Link to the API endpoint for this dataservice", show_as_ref=True)
     def self_api_url(self, **kwargs):

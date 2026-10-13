@@ -652,14 +652,15 @@ class Dataset(
         ),
         auditable=False,
     )
+
+    harvest_metadata_class = HarvestDatasetMetadata
     harvest = field(
         EmbeddedDocumentField(HarvestDatasetMetadata),
         readonly=True,
         auditable=False,
     )
-    geopf = field(EmbeddedDocumentField(GeopfDatasetMetadata), auditable=False)
 
-    harvest_metadata_class = HarvestDatasetMetadata
+    geopf = field(EmbeddedDocumentField(GeopfDatasetMetadata), auditable=False)
 
     quality_cached = field(DictField(), auditable=False)
 

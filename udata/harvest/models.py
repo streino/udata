@@ -25,6 +25,7 @@ from udata.auth import admin_permission
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.api_fields import dataset_ref_fields
 from udata.core.dataset.models import Dataset
+from udata.core.harvest import Harvestable
 from udata.core.owned import Owned, OwnedQuerySet
 from udata.i18n import lazy_gettext as _
 from udata.mongo.document import UDataDocument as Document
@@ -72,9 +73,6 @@ HARVEST_ITEM_STATUS = OrderedDict(
 DEFAULT_HARVEST_FREQUENCY = "manual"
 DEFAULT_HARVEST_JOB_STATUS = "pending"
 DEFAULT_HARVEST_ITEM_STATUS = "pending"
-
-
-from udata.core.harvest import Harvestable  # noqa: E402  (re-export)
 
 
 @generate_fields()
