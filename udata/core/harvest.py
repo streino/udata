@@ -47,56 +47,54 @@ class HarvestMetadata(EmbeddedDocument):
     archived_reason = field(StringField())
 
 
-# FIXME[series]: more specific name
 # FIXME[series]: improve comments
 @dataclass
-class Reference(ABC):
-    """A collected cross-reference; the subclass is its own kind."""
+class PendingRelation(ABC):
+    """A cross-reference between harvested items awaiting resolution; the subclass is its own kind.
 
+    `owner` is the harvested item this relation was collected on; it is set by
+    `Harvestable.add_pending_relation()` once the relation is attached to its owner.
+    """
+
+    # `dct:identifier` values collected from the predicate objects, matched against the
+    # target's harvested `remote_id`.
     identifiers: list[str]
+
+    # `rdf:resource` object URIs collected from the predicate objects, matched against the
+    # target's harvested `harvest.uri`.
     uris: list[str]
+
+    owner: "Harvestable | None" = None
 
     predicate: ClassVar[Node]
 
     @classmethod
     @abstractmethod
     def from_rdf(cls, node):
-        """Collect the reference data from the objects of `cls.predicate` on an rdflib `Resource`."""
+        """Collect the relation data from the objects of `cls.predicate` on an rdflib `Resource`."""
         raise NotImplementedError
 
-    # FIXME[series]: rename index -> lookup?
     @classmethod
     @abstractmethod
-    def index_keys(cls, item):
+    def lookup_keys(cls, item):
         """Yield the keys under which `item` should be findable in the registry."""
         raise NotImplementedError
 
-    @classmethod
     @abstractmethod
-    def resolve(cls, registry, reference):
-        """Return the target items for a collected reference of this kind."""
+    def resolve(self, registry):
+        """Return the target items for this collected relation."""
         raise NotImplementedError
 
-    @classmethod
     @abstractmethod
-    def apply(cls, resolver, owner, targets):
-        """Apply the resolved `targets` to the `owner` item."""
+    def apply(self, resolver, targets):
+        """Apply the resolved `targets` to `self.owner`."""
         raise NotImplementedError
-
-
-# FIXME[series]: improve comments
-@dataclass
-class PendingReference:
-    """A reference collected on `owner` that is waiting to be resolved."""
-
-    owner: "Harvestable"
-    reference: Reference
 
     # FIXME[series]: standard python object repr
     def __repr__(self):
         return (
-            f"Pending(owner={type(self.owner).__name__}({getattr(self.owner, 'id', None)}), "
-            f"reference={type(self.reference).__name__}({self.reference}))"
+            f"PendingRelation(owner={type(self.owner).__name__}({getattr(self.owner, 'id', None)}), "
+            f"identifiers={self.identifiers}, uris={self.uris})"
         )
 
 
@@ -115,29 +113,28 @@ class Harvestable(Owned):
             self.harvest = self.harvest_metadata_class()
 
     # FIXME[series]: avoid __setattr__/__getattribute__?
-    # FIXME[series]: coherent func names (pending vs pending_references)
-    def add_pending(self, reference: Reference) -> None:
-        log.info(f"REFS: add_pending: reference={type(reference).__name__}, {reference=}")
-        pending = PendingReference(owner=self, reference=reference)
-        object.__setattr__(self, "_pending_references", self.pending_references() + [pending])
+    def add_pending_relation(self, relation: PendingRelation) -> None:
+        log.info(f"REFS: add_pending_relation: relation={type(relation).__name__}, {relation=}")
+        relation.owner = self
+        object.__setattr__(self, "_pending_references", self.pending_relations() + [relation])
 
-    def pending_references(self):
+    def pending_relations(self):
         try:
             return object.__getattribute__(self, "_pending_references")
         except AttributeError:
             return []
 
 
-class ReferenceResolver:
+class RelationResolver:
     """
-    Collect the harvested items (and the pending references they carry) as they are processed,
-    then resolve every pending reference once the whole run has been walked.
+    Collect the harvested items (and the pending relations they carry) as they are processed,
+    then resolve every pending relation once the whole run has been walked.
     """
 
     def __init__(self, dryrun: bool = False):
         self.dryrun = dryrun
         self._items: list = []
-        self._pending: dict[type[Reference], list[PendingReference]] = defaultdict(list)
+        self._pending: dict[type[PendingRelation], list[PendingRelation]] = defaultdict(list)
         # Run-scoped mapping from a record UUID (`isPrimaryTopicOf`/`dct:identifier`) to the
         # item that carries it. Items expose it through a transient `_remote_record_id`
         # attribute that is never persisted, so this mapping only lives for one harvest run.
@@ -146,33 +143,33 @@ class ReferenceResolver:
     def register(self, item) -> None:
         log.info(
             f"REFS: register: item={type(item).__name__}({getattr(item, 'id', None)}), "
-            f"pending_kinds={[type(p.reference).__name__ for p in item.pending_references()]}"
+            f"pending_kinds={[type(p).__name__ for p in item.pending_relations()]}"
         )
         self._items.append(item)
         if record_uuid := getattr(item, "_remote_record_id", None):
             self._record_uuids[record_uuid] = item
-        for pending in item.pending_references():
-            self._pending[type(pending.reference)].append(pending)
+        for relation in item.pending_relations():
+            self._pending[type(relation)].append(relation)
 
     def resolve(self) -> None:
         log.info("REFS: resolving...")
-        for ref_cls, pending_references in self._pending.items():
+        for ref_cls, relations in self._pending.items():
             registry = self._build_registry(ref_cls)
             registry.update(self._record_uuids)
             log.info(f"REFS: resolve: kind={ref_cls.__name__}, {registry=}")
-            for pending in pending_references:
-                targets = ref_cls.resolve(registry, pending.reference)
+            for relation in relations:
+                targets = relation.resolve(registry)
                 if targets:
                     log.info(
                         f"REFS: resolve: kind={ref_cls.__name__}, "
-                        f"owner={type(pending.owner).__name__}({getattr(pending.owner, 'id', None)}), "
+                        f"owner={type(relation.owner).__name__}({getattr(relation.owner, 'id', None)}), "
                         f"{targets=}"
                     )
-                    ref_cls.apply(self, pending.owner, targets)
+                    relation.apply(self, targets)
 
     def _build_registry(self, ref_cls) -> dict:
         registry = {}
         for item in self._items:
-            for key in ref_cls.index_keys(item):
+            for key in ref_cls.lookup_keys(item):
                 registry[key] = item
         return registry

@@ -135,20 +135,20 @@ The udata rdf implementation and its harvester were created using these referenc
 
 ### Reference handling
 
-When converting RDF to internal models the parser uses `InSeriesReference.from_rdf` (a subclass
-of `Reference` in `udata.core.harvest`). The helper extracts **only**
+When converting RDF to internal models the parser uses `InSeriesRelation.from_rdf` (a subclass
+of `PendingRelation` in `udata.core.harvest`). The helper extracts **only**
 `rdf:resource` URIs; inline resources that provide a `dct:identifier` or are blank‑nodes are ignored (a warning is emitted).
 
-The returned `Reference` object contains two lists:
+The returned `PendingRelation` object contains two lists:
 - `identifiers` – never populated for DCAT harvests (inline definitions are ignored).
-- `uris` – the absolute URIs that will be used by the `ReferenceResolver` (also in `udata.core.harvest`).
+- `uris` – the absolute URIs that will be used by the `RelationResolver` (also in `udata.core.harvest`).
 
 Typical usage inside a parser:
 
 ```python
-ref = InSeriesReference.from_rdf(resource)
-if ref.uris or ref.identifiers:
-    dataset.add_pending(ref)
+rel = InSeriesRelation.from_rdf(resource)
+if rel.uris or rel.identifiers:
+    dataset.add_pending_relation(rel)
 ```
 
 This logic replaces the previous manual graph traversal and guarantees consistent handling across all harvest back‑ends.

@@ -22,7 +22,7 @@ from udata import i18n, uris
 from udata.core.access_type.constants import AccessType, InspireLimitationCategory
 from udata.core.constants import HVD
 from udata.core.dataset.models import HarvestResourceMetadata
-from udata.core.harvest import Reference
+from udata.core.harvest import PendingRelation
 from udata.core.spatial.models import SpatialCoverage
 from udata.harvest.exceptions import HarvestSkipException
 from udata.mongo.datetime_fields import DateRange
@@ -74,18 +74,18 @@ log = logging.getLogger(__name__)
 
 
 # A `dcat:inSeries` (and other cross-references) can take two distinct forms, both handled by
-# `DatasetReference.resolve`:
+# `DatasetRelation.resolve`:
 #
 # 1. A *resource reference* (standard, e.g. GeoNetwork): the predicate object is the parent
 #    resource itself, referenced by its `dct:identifier` or resource URI. Resolved against the
 #    harvested parent's `remote_id` / `harvest.uri`.
 # 2. A *record reference* (SEMIC/ISO-19139): the predicate object is a synthetic URN encoding a
 #    parent *record* UUID (`urn:iso19139:<type>:<record-uuid>`), not a resource URI. Resolved
-#    through the run-scoped record UUID -> item mapping in `ReferenceResolver._record_uuids`.
+#    through the run-scoped record UUID -> item mapping in `RelationResolver._record_uuids`.
 ISO19139_URN_PREFIX = "urn:iso19139:"
 
 
-class DatasetReference(Reference):
+class DatasetRelation(PendingRelation):
     """A cross-reference whose target is a harvested `Dataset` (e.g. `dcat:inSeries`)."""
 
     @classmethod
@@ -131,8 +131,8 @@ class DatasetReference(Reference):
         return cls(identifiers=identifiers, uris=uris)
 
     @classmethod
-    def index_keys(cls, item):
-        log.info(f"REFS: index_keys: {item=}, {item.harvest=}")
+    def lookup_keys(cls, item):
+        log.info(f"REFS: lookup_keys: {item=}, {item.harvest=}")
         if not isinstance(item, Dataset) or item.harvest is None:
             return
         if item.harvest.remote_id:
@@ -140,14 +140,13 @@ class DatasetReference(Reference):
         if item.harvest.uri:
             yield item.harvest.uri
 
-    @classmethod
-    def resolve(cls, registry, reference):
+    def resolve(self, registry):
         targets = []
 
         # Form 1 — resource reference (standard, e.g. GeoNetwork): the predicate object is the
         # parent resource itself, referenced by its `dct:identifier` or by its resource URI. Both
-        # are indexed from the harvested parent's `remote_id` and `harvest.uri` (see `index_keys`).
-        for identifier in reference.identifiers:
+        # are indexed from the harvested parent's `remote_id` and `harvest.uri` (see `lookup_keys`).
+        for identifier in self.identifiers:
             target = registry.get(identifier)
             if target is None:
                 # Europe XSLT sometimes prefixes identifiers with the catalog domain.
@@ -161,7 +160,7 @@ class DatasetReference(Reference):
                 )
             if target is not None and target not in targets:
                 targets.append(target)
-        for uri in reference.uris:
+        for uri in self.uris:
             target = registry.get(uri)
             if target is not None and target not in targets:
                 targets.append(target)
@@ -169,8 +168,8 @@ class DatasetReference(Reference):
         # Form 2 — record reference (SEMIC/ISO-19139): the URI is a synthetic URN encoding the
         # parent *record* UUID (`urn:iso19139:<type>:<record-uuid>`), not a resource URI. There is
         # no matching `remote_id`/`harvest.uri`, so resolve through the run-scoped record UUID
-        # mapping (`ReferenceResolver._record_uuids`) instead.
-        for uri in reference.uris:
+        # mapping (`RelationResolver._record_uuids`) instead.
+        for uri in self.uris:
             if not uri.startswith(ISO19139_URN_PREFIX):
                 continue
             record_uuid = uri.rsplit(":", 1)[-1]
@@ -182,21 +181,20 @@ class DatasetReference(Reference):
         return targets
 
 
-class InSeriesReference(DatasetReference):
+class InSeriesRelation(DatasetRelation):
     """A dataset belongs to a series (`dcat:inSeries`)."""
 
     predicate = DCAT.inSeries
 
-    @classmethod
-    def apply(cls, resolver, owner, targets):
+    def apply(self, resolver, targets):
         if not targets:
             return
         parent = targets[0]
 
         log.info(f"REFS: apply: extras.dcat.in_series = {str(parent.id)}")
-        set_dcat_extra(owner, "in_series", str(parent.id))
+        set_dcat_extra(self.owner, "in_series", str(parent.id))
         if not resolver.dryrun:
-            owner.save()
+            self.owner.save()
 
 
 FREQ_TERM_TO_UDATA = {
@@ -1194,8 +1192,8 @@ def dataset_from_rdf(
     dataset.harvest.remote_url = remote_url
     # FIXME[series]: improve comment
     # Transient attribute, not a model field: the record UUID only needs to live for the
-    # duration of a single harvest run so pending `urn:iso19139:parent:<uuid>` references
-    # can be resolved against it (see udata.core.harvest.ReferenceResolver).
+    # duration of a single harvest run so pending `urn:iso19139:parent:<uuid>` relations
+    # can be resolved against it (see udata.core.harvest.RelationResolver).
     dataset._remote_record_id = record_identifier_from_rdf(graph, d)
     dataset.harvest.created_at = created_at
     dataset.harvest.issued_at = issued_at
@@ -1205,9 +1203,9 @@ def dataset_from_rdf(
         modified_at, "DCT.modified (dataset)", refuse_future=True
     )
 
-    in_series = InSeriesReference.from_rdf(d)
+    in_series = InSeriesRelation.from_rdf(d)
     if in_series.identifiers or in_series.uris:
-        dataset.add_pending(in_series)
+        dataset.add_pending_relation(in_series)
 
     return dataset
 

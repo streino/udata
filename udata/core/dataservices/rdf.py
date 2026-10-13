@@ -6,7 +6,7 @@ from rdflib import RDF, BNode, Graph, Literal, Node, URIRef
 from udata.core.constants import HVD
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.models import Dataset, License
-from udata.core.dataset.rdf import DatasetReference, dataset_to_graph_id, sanitize_html
+from udata.core.dataset.rdf import DatasetRelation, dataset_to_graph_id, sanitize_html
 from udata.rdf import (
     CONTACT_POINT_ENTITY_TO_ROLE,
     DCAT,
@@ -28,19 +28,18 @@ from udata.rdf import (
 log = logging.getLogger(__name__)
 
 
-class ServesDatasetsReference(DatasetReference):
+class ServesDatasetRelation(DatasetRelation):
     """A dataservice serves one or more datasets (`dcat:servesDataset`)."""
 
     predicate = DCAT.servesDataset
 
-    @classmethod
-    def apply(cls, resolver, owner, targets):
+    def apply(self, resolver, targets):
         for dataset in targets:
-            if dataset not in owner.datasets:
+            if dataset not in self.owner.datasets:
                 log.info(f"REFS: apply: datasets += Dataset({dataset.id})")
-                owner.datasets.append(dataset)
+                self.owner.datasets.append(dataset)
         if not resolver.dryrun:
-            owner.save()
+            self.owner.save()
 
 
 def dataservice_from_rdf(
@@ -96,9 +95,9 @@ def dataservice_from_rdf(
 
     dataservice.tags = themes_from_rdf(d)
 
-    serves = ServesDatasetsReference.from_rdf(d)
+    serves = ServesDatasetRelation.from_rdf(d)
     if serves.identifiers or serves.uris:
-        dataservice.add_pending(serves)
+        dataservice.add_pending_relation(serves)
 
     return dataservice
 

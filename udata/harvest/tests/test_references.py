@@ -1,10 +1,10 @@
 """Unit tests for the reference resolution machinery introduced with the harvest refactor.
 
-These tests exercise `udata.core.harvest` (the dependency-free `Reference` base,
-`PendingReference`, and the `ReferenceResolver`) and the concrete reference subclasses in
-`udata.core.dataset.rdf` / `udata.core.dataservices.rdf`. Real `Dataset` instances are used where
-only pure attribute/dict access is involved (`index_keys`, `resolve`). The `apply` step mutates
-the `datasets` ReferenceField (which needs saved documents), so the resolver orchestration and the
+These tests exercise `udata.core.harvest` (the dependency-free `PendingRelation` base and the
+`RelationResolver`) and the concrete relation subclasses in `udata.core.dataset.rdf` /
+`udata.core.dataservices.rdf`. Real `Dataset` instances are used where only pure
+attribute/dict access is involved (`lookup_keys`, `resolve`). The `apply` step mutates the
+`datasets` ReferenceField (which needs saved documents), so the resolver orchestration and the
 `apply` methods are tested against small fakes. No database is required.
 """
 
@@ -13,10 +13,10 @@ import logging
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
 
 from udata.core.dataservices.models import Dataservice
-from udata.core.dataservices.rdf import ServesDatasetsReference
+from udata.core.dataservices.rdf import ServesDatasetRelation
 from udata.core.dataset.models import Dataset
-from udata.core.dataset.rdf import DatasetReference, InSeriesReference
-from udata.core.harvest import PendingReference, Reference, ReferenceResolver
+from udata.core.dataset.rdf import DatasetRelation, InSeriesRelation
+from udata.core.harvest import PendingRelation, RelationResolver
 
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
 DCT = Namespace("http://purl.org/dc/terms/")
@@ -41,7 +41,7 @@ class ReferencesFromRdfTest:
         target = URIRef("http://ex/dataset/1")
         graph.add((node, DCAT.servesDataset, target))
 
-        reference = ServesDatasetsReference.from_rdf(graph.resource(node))
+        reference = ServesDatasetRelation.from_rdf(graph.resource(node))
 
         assert reference.identifiers == []
         assert reference.uris == ["http://ex/dataset/1"]
@@ -54,7 +54,7 @@ class ReferencesFromRdfTest:
         parent = URIRef("http://ex/api/records/parent")
         graph.add((node, DCAT.inSeries, parent))
 
-        reference = InSeriesReference.from_rdf(graph.resource(node))
+        reference = InSeriesRelation.from_rdf(graph.resource(node))
 
         assert reference.identifiers == []
         assert reference.uris == ["http://ex/api/records/parent"]
@@ -68,13 +68,13 @@ class ReferencesFromRdfTest:
         graph.add((node, DCAT.servesDataset, by_uri))
         graph.add((by_id, DCT.identifier, Literal("A")))
 
-        reference = ServesDatasetsReference.from_rdf(graph.resource(node))
+        reference = ServesDatasetRelation.from_rdf(graph.resource(node))
 
         # Inline identifier should be ignored; only the URI should be collected.
         assert reference.identifiers == []
         assert reference.uris == ["http://ex/b"]
 
-        empty = ServesDatasetsReference.from_rdf(graph.resource(URIRef("http://ex/other")))
+        empty = ServesDatasetRelation.from_rdf(graph.resource(URIRef("http://ex/other")))
         assert empty.identifiers == []
         assert empty.uris == []
 
@@ -86,7 +86,7 @@ class ReferencesFromRdfTest:
         graph.add((node, DCAT.servesDataset, inline))
         graph.add((inline, DCT.identifier, Literal("ignored")))
         with caplog.at_level(logging.WARNING):
-            ref = ServesDatasetsReference.from_rdf(graph.resource(node))
+            ref = ServesDatasetRelation.from_rdf(graph.resource(node))
         assert ref.identifiers == []
         assert ref.uris == []
         assert any("Ignoring inline" in rec.message for rec in caplog.records)
@@ -98,29 +98,29 @@ class ReferencesFromRdfTest:
         blank = BNode()
         graph.add((node, DCAT.servesDataset, blank))  # no rdf:resource, no identifier
         with caplog.at_level(logging.WARNING):
-            ref = ServesDatasetsReference.from_rdf(graph.resource(node))
+            ref = ServesDatasetRelation.from_rdf(graph.resource(node))
         assert ref.identifiers == []
         assert ref.uris == []
         assert any("Ignoring inline" in rec.message for rec in caplog.records)
 
 
-class DatasetReferenceTest:
-    def test_index_keys_uses_remote_id_and_uri(self):
+class DatasetRelationTest:
+    def test_lookup_keys_uses_remote_id_and_uri(self):
         dataset = build_dataset(remote_id="1", uri="http://ex/1")
 
-        assert set(DatasetReference.index_keys(dataset)) == {"1", "http://ex/1"}
+        assert set(DatasetRelation.lookup_keys(dataset)) == {"1", "http://ex/1"}
 
-    def test_index_keys_ignores_non_datasets(self):
+    def test_lookup_keys_ignores_non_datasets(self):
         service = Dataservice(harvest={"remote_id": "s"})
 
-        assert list(DatasetReference.index_keys(service)) == []
+        assert list(DatasetRelation.lookup_keys(service)) == []
 
     def test_resolve_by_identifier_exact(self):
         d1 = build_dataset(remote_id="1")
         d2 = build_dataset(remote_id="2")
         registry = {"1": d1, "2": d2}
 
-        targets = DatasetReference.resolve(registry, InSeriesReference(identifiers=["2"], uris=[]))
+        targets = InSeriesRelation(identifiers=["2"], uris=[]).resolve(registry)
 
         assert targets == [d2]
 
@@ -128,7 +128,7 @@ class DatasetReferenceTest:
         d1 = build_dataset(remote_id="http://data.test.org/1")
         registry = {"http://data.test.org/1": d1}
 
-        targets = DatasetReference.resolve(registry, InSeriesReference(identifiers=["1"], uris=[]))
+        targets = InSeriesRelation(identifiers=["1"], uris=[]).resolve(registry)
 
         assert targets == [d1]
 
@@ -136,9 +136,7 @@ class DatasetReferenceTest:
         d1 = build_dataset(uri="http://ex/1")
         registry = {"http://ex/1": d1}
 
-        targets = DatasetReference.resolve(
-            registry, InSeriesReference(identifiers=[], uris=["http://ex/1"])
-        )
+        targets = InSeriesRelation(identifiers=[], uris=["http://ex/1"]).resolve(registry)
 
         assert targets == [d1]
 
@@ -148,8 +146,8 @@ class DatasetReferenceTest:
         parent = build_dataset(uri="http://ex/api/records/parent")
         registry = {"http://ex/api/records/parent": parent}
 
-        targets = DatasetReference.resolve(
-            registry, InSeriesReference(identifiers=[], uris=["http://ex/api/records/parent"])
+        targets = InSeriesRelation(identifiers=[], uris=["http://ex/api/records/parent"]).resolve(
+            registry
         )
 
         assert targets == [parent]
@@ -160,8 +158,8 @@ class DatasetReferenceTest:
         parent = build_dataset(uri="http://ex/api/records/parent", record_uuid="12345")
         registry = {"http://ex/api/records/parent": parent, "12345": parent}
 
-        targets = DatasetReference.resolve(
-            registry, InSeriesReference(identifiers=[], uris=["http://ex/api/records/other"])
+        targets = InSeriesRelation(identifiers=[], uris=["http://ex/api/records/other"]).resolve(
+            registry
         )
 
         assert targets == []
@@ -170,18 +168,14 @@ class DatasetReferenceTest:
         d1 = build_dataset(remote_id="1", uri="http://ex/1")
         registry = {"1": d1, "http://ex/1": d1}
 
-        targets = DatasetReference.resolve(
-            registry, InSeriesReference(identifiers=["1"], uris=["http://ex/1"])
-        )
+        targets = InSeriesRelation(identifiers=["1"], uris=["http://ex/1"]).resolve(registry)
 
         assert targets == [d1]
 
     def test_resolve_unknown_returns_empty(self):
         registry = {"1": build_dataset(remote_id="1")}
 
-        targets = DatasetReference.resolve(
-            registry, InSeriesReference(identifiers=["nope"], uris=[])
-        )
+        targets = InSeriesRelation(identifiers=["nope"], uris=[]).resolve(registry)
 
         assert targets == []
 
@@ -190,8 +184,8 @@ class DatasetReferenceTest:
         parent = build_dataset(remote_id="series", record_uuid="12345")
         registry = {"series": parent, "12345": parent}
 
-        targets = DatasetReference.resolve(
-            registry, InSeriesReference(identifiers=[], uris=["urn:iso19139:parent:12345"])
+        targets = InSeriesRelation(identifiers=[], uris=["urn:iso19139:parent:12345"]).resolve(
+            registry
         )
 
         assert targets == [parent]
@@ -201,8 +195,8 @@ class DatasetReferenceTest:
         parent = build_dataset(remote_id="series", record_uuid="12345")
         registry = {"series": parent, "12345": parent}
 
-        targets = DatasetReference.resolve(
-            registry, InSeriesReference(identifiers=[], uris=["urn:iso19139:parent:unknown"])
+        targets = InSeriesRelation(identifiers=[], uris=["urn:iso19139:parent:unknown"]).resolve(
+            registry
         )
 
         assert targets == []
@@ -217,39 +211,39 @@ class _FakeOwner:
         self.saved = True
 
 
-class ServesDatasetsKindTest:
+class ServesDatasetKindTest:
     def test_apply_appends_targets(self):
         d1 = build_dataset(remote_id="1")
         d2 = build_dataset(remote_id="2")
         owner = _FakeOwner()
+        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        ServesDatasetsReference.apply(type("R", (), {"dryrun": True})(), owner, [d1, d2])
+        relation.apply(type("R", (), {"dryrun": True})(), [d1, d2])
 
         assert owner.datasets == [d1, d2]
 
     def test_apply_dedups_existing(self):
         d1 = build_dataset(remote_id="1")
         owner = _FakeOwner(datasets=[d1])
+        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        ServesDatasetsReference.apply(type("R", (), {"dryrun": True})(), owner, [d1, d1])
+        relation.apply(type("R", (), {"dryrun": True})(), [d1, d1])
 
         assert owner.datasets == [d1]
 
     def test_apply_live_run_saves(self):
         owner = _FakeOwner()
+        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        ServesDatasetsReference.apply(
-            type("R", (), {"dryrun": False})(), owner, [build_dataset(remote_id="1")]
-        )
+        relation.apply(type("R", (), {"dryrun": False})(), [build_dataset(remote_id="1")])
 
         assert owner.saved is True
 
     def test_apply_dryrun_does_not_save(self):
         owner = _FakeOwner()
+        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        ServesDatasetsReference.apply(
-            type("R", (), {"dryrun": True})(), owner, [build_dataset(remote_id="1")]
-        )
+        relation.apply(type("R", (), {"dryrun": True})(), [build_dataset(remote_id="1")])
 
         assert owner.saved is False
 
@@ -259,20 +253,22 @@ class InSeriesKindTest:
         child = build_dataset(remote_id="child")
         parent = build_dataset(remote_id="parent")
         parent.id = "parent_id"
+        relation = InSeriesRelation(identifiers=[], uris=[], owner=child)
 
-        InSeriesReference.apply(type("R", (), {"dryrun": True})(), child, [parent])
+        relation.apply(type("R", (), {"dryrun": True})(), [parent])
 
         assert child.extras["dcat"]["in_series"] == "parent_id"
 
     def test_apply_empty_targets_is_noop(self):
         child = build_dataset(remote_id="child")
+        relation = InSeriesRelation(identifiers=[], uris=[], owner=child)
 
-        InSeriesReference.apply(type("R", (), {"dryrun": True})(), child, [])
+        relation.apply(type("R", (), {"dryrun": True})(), [])
 
         assert "dcat" not in child.extras
 
 
-class _FakeRef(Reference):
+class _FakeRef(PendingRelation):
     predicate = URIRef("http://ex/fake")
 
     @classmethod
@@ -280,16 +276,14 @@ class _FakeRef(Reference):
         return cls(identifiers=[], uris=[])
 
     @classmethod
-    def index_keys(cls, item):
+    def lookup_keys(cls, item):
         yield item.key
 
-    @classmethod
-    def resolve(cls, registry, reference):
-        return [registry[k] for k in reference.identifiers if k in registry]
+    def resolve(self, registry):
+        return [registry[k] for k in self.identifiers if k in registry]
 
-    @classmethod
-    def apply(cls, resolver, owner, targets):
-        owner.resolved = [t.key for t in targets]
+    def apply(self, resolver, targets):
+        self.owner.resolved = [t.key for t in targets]
 
 
 class _FakeItem:
@@ -297,21 +291,22 @@ class _FakeItem:
         self.key = key
         self._pending = []
 
-    def add_pending(self, reference):
-        self._pending.append(PendingReference(owner=self, reference=reference))
+    def add_pending_relation(self, relation):
+        relation.owner = self
+        self._pending.append(relation)
 
-    def pending_references(self):
+    def pending_relations(self):
         return self._pending
 
 
-class ReferenceResolverTest:
+class RelationResolverTest:
     def test_register_collects_pending_and_resolves(self):
         source = _FakeItem("service")
-        source.add_pending(_FakeRef(identifiers=["d1", "d2"], uris=[]))
+        source.add_pending_relation(_FakeRef(identifiers=["d1", "d2"], uris=[]))
         target1 = _FakeItem("d1")
         target2 = _FakeItem("d2")
 
-        resolver = ReferenceResolver(dryrun=True)
+        resolver = RelationResolver(dryrun=True)
         for item in (target1, target2, source):
             resolver.register(item)
         resolver.resolve()
@@ -320,7 +315,7 @@ class ReferenceResolverTest:
 
     def test_resolve_without_pending_is_noop(self):
         target = _FakeItem("d1")
-        resolver = ReferenceResolver(dryrun=True)
+        resolver = RelationResolver(dryrun=True)
         resolver.register(target)
         resolver.resolve()
 
@@ -328,10 +323,10 @@ class ReferenceResolverTest:
 
     def test_resolve_unknown_target_is_skipped(self):
         source = _FakeItem("service")
-        source.add_pending(_FakeRef(identifiers=["d1", "nope"], uris=[]))
+        source.add_pending_relation(_FakeRef(identifiers=["d1", "nope"], uris=[]))
         target1 = _FakeItem("d1")
 
-        resolver = ReferenceResolver(dryrun=True)
+        resolver = RelationResolver(dryrun=True)
         resolver.register(target1)
         resolver.register(source)
         resolver.resolve()
@@ -343,10 +338,12 @@ class ReferenceResolverTest:
         references against it end-to-end."""
         parent = build_dataset(remote_id="series", record_uuid="12345")
         child = build_dataset(remote_id="child")
-        child.add_pending(InSeriesReference(identifiers=[], uris=["urn:iso19139:parent:12345"]))
+        child.add_pending_relation(
+            InSeriesRelation(identifiers=[], uris=["urn:iso19139:parent:12345"])
+        )
         parent.id = "parent_id"
 
-        resolver = ReferenceResolver(dryrun=True)
+        resolver = RelationResolver(dryrun=True)
         resolver.register(parent)
         resolver.register(child)
         resolver.resolve()
@@ -359,10 +356,12 @@ class ReferenceResolverTest:
         only through its resource URI — resolves end-to-end without any record UUID mapping."""
         parent = build_dataset(uri="http://ex/api/records/parent")
         child = build_dataset(remote_id="child")
-        child.add_pending(InSeriesReference(identifiers=[], uris=["http://ex/api/records/parent"]))
+        child.add_pending_relation(
+            InSeriesRelation(identifiers=[], uris=["http://ex/api/records/parent"])
+        )
         parent.id = "parent_id"
 
-        resolver = ReferenceResolver(dryrun=True)
+        resolver = RelationResolver(dryrun=True)
         resolver.register(parent)
         resolver.register(child)
         resolver.resolve()

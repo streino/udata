@@ -15,7 +15,7 @@ from udata.core.dataservices.models import Dataservice
 from udata.core.dataservices.rdf import dataservice_from_rdf
 from udata.core.dataset.models import Dataset
 from udata.core.dataset.rdf import dataset_from_rdf
-from udata.core.harvest import ReferenceResolver
+from udata.core.harvest import RelationResolver
 from udata.harvest.models import HarvestError, HarvestItem
 from udata.i18n import lazy_gettext as _
 from udata.rdf import (
@@ -77,7 +77,7 @@ class DcatBackend(BaseBackend):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.graphs = list[tuple[Graph, int]]()
-        self.references = ReferenceResolver(dryrun=self.dryrun)
+        self.relations = RelationResolver(dryrun=self.dryrun)
 
     @override
     def inner_harvest(self):
@@ -90,7 +90,7 @@ class DcatBackend(BaseBackend):
                 self.process_page(page_graph, page_number)
         finally:
             # FIXME[series]: try/except
-            self.references.resolve()
+            self.relations.resolve()
             try:
                 self.store_graphs()
             except Exception as e:
@@ -220,7 +220,7 @@ class DcatBackend(BaseBackend):
             graph, dataset, node=node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun
         )
 
-        self.references.register(dataset)
+        self.relations.register(dataset)
 
         return dataset
 
@@ -244,7 +244,7 @@ class DcatBackend(BaseBackend):
             dryrun=self.dryrun,
         )
 
-        self.references.register(dataservice)
+        self.relations.register(dataservice)
 
         return dataservice
 
