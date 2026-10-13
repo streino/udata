@@ -11,6 +11,7 @@ models (a `dcat:servesDataset` target is a `Dataset`), while the generic pending
 machinery (`Reference`, `ReferenceKind`, `PendingReference`, `references_from_rdf`) is kept as a
 dependency-free leaf in `udata.references`.
 """
+# FIXME[series]: improve comment
 
 import logging
 from collections import defaultdict
@@ -19,6 +20,7 @@ from udata.references import PendingReference, ReferenceKind
 
 log = logging.getLogger(__name__)
 
+# FIXME[series]: move to InSeriesKind
 # A `dcat:inSeries` (and other cross-references) can take two distinct forms, both handled by
 # `DatasetReferenceKind.resolve`:
 #
@@ -117,6 +119,7 @@ class InSeriesKind(DatasetReferenceKind):
             owner.save()
 
 
+# FIXME[series]: use singletons/static methods only
 SERVES_DATASETS = ServesDatasetsKind()
 IN_SERIES = InSeriesKind()
 

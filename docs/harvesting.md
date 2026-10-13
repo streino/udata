@@ -47,6 +47,8 @@ class MyHarvester(BaseBackend):
 
 ## Reference handling
 
+FIXME[series]: review doc
+
 Harvested items are now built in two distinct phases:
 
 1. **Parsing phase** – each RDF node is turned into a model (`Dataset` or `Dataservice`).  The model is created, populated, and any cross‑resource link is stored as a *pending reference* using the `Harvestable.add_pending()` API. No `save()` is performed at this stage.

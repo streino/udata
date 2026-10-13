@@ -10,12 +10,21 @@ This module is a dependency-free leaf: it only depends on `rdflib` and the stand
 both the core models (``udata/core/*/models.py``) and the harvest backends can import it without
 creating import cycles.
 """
+# FIXME[series]: improve comments
+# FIXME[series]: add tests ?
 
 import logging
 from dataclasses import dataclass
 from typing import Any, Hashable, Iterable
 
+from rdflib import BNode
 
+from udata.rdf import DCT
+
+log = logging.getLogger(__name__)
+
+
+# FIXME[series]: more specific name
 @dataclass
 class Reference:
     """Identifiers and URIs collected from the objects of an RDF predicate."""
@@ -24,9 +33,7 @@ class Reference:
     uris: list[str]
 
 
-log = logging.getLogger(__name__)
-
-
+# FIXME[series]: improve comments: don't mention of Dataset + why ignore inline elements?
 def references_from_rdf(node, predicate) -> Reference:
     """
     Collect the URIs of the objects of `predicate` on an rdflib `Resource`.
@@ -34,14 +41,10 @@ def references_from_rdf(node, predicate) -> Reference:
     Only `rdf:resource` URIs are processed. Inline `dcat:Dataset` elements (e.g. with
     a `dct:identifier` but no `rdf:resource`) are ignored and a warning is emitted.
     """
-    # Import DCT to detect inline identifiers.
-    from rdflib import BNode
-
-    from udata.rdf import DCT
-
     identifiers: list[str] = []
     uris: list[str] = []
 
+    # FIXME[series]: use rdf_value?
     for obj in node.objects(predicate):
         # ``obj`` is a ``rdflib.resource.Resource``. Its ``identifier`` attribute holds the actual node.
         identifier_node = getattr(obj, "identifier", None)
@@ -69,6 +72,8 @@ def references_from_rdf(node, predicate) -> Reference:
     return Reference(identifiers=identifiers, uris=uris)
 
 
+# FIXME[series]: improve comments
+# FIXME[series]: abstract class/methods?
 class ReferenceKind:
     """
     Resolution logic for a given type of pending reference.
@@ -81,6 +86,7 @@ class ReferenceKind:
 
     name: str = ""
 
+    # FIXME[series]: rename index -> lookup?
     def index_keys(self, item) -> Iterable[Hashable]:
         """Yield the keys under which `item` should be findable in the registry."""
         raise NotImplementedError
@@ -94,13 +100,15 @@ class ReferenceKind:
         raise NotImplementedError
 
 
+# FIXME[series]: improve comments
 @dataclass
 class PendingReference:
-    """A reference collected on `owner` that is waiting for the end of the harvest run."""
+    """A reference collected on `owner` that is waiting to be resolved."""
 
-    owner: Any  # FIXME: Harvestable
+    owner: Any  # FIXME[series]: Harvestable (!! circular reference)
     kind: ReferenceKind
     data: Any
 
+    # FIXME[series]: standard python object repr
     def __repr__(self):
         return f"Pending(owner={type(self.owner).__name__}({self.owner.id}), kind={self.kind.name}, data={self.data})"

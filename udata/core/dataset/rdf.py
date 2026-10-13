@@ -1066,6 +1066,7 @@ def dataset_from_rdf(
     dataset.harvest.dct_identifier = identifier
     dataset.harvest.uri = uri
     dataset.harvest.remote_url = remote_url
+    # FIXME[series]: improve comment
     # Transient attribute, not a model field: the record UUID only needs to live for the
     # duration of a single harvest run so pending `urn:iso19139:parent:<uuid>` references
     # can be resolved against it (see udata.harvest.references.ReferenceResolver).

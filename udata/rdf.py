@@ -548,6 +548,7 @@ def contact_points_to_rdf(contacts, graph=None):
         yield node, role
 
 
+# FIXME[series]: merge in record_identifier_from_rdf?
 def primary_topic_identifier_from_rdf(graph: Graph, resource: RdfResource):
     """
     Extract the dct:identifier from a primaryTopic of a RdfResource `resource` via an RDF `graph`.
@@ -590,6 +591,8 @@ def record_identifier_from_rdf(graph: Graph, resource: RdfResource) -> str | Non
     identifier = primary_topic_identifier_from_rdf(graph, resource)
     if identifier is None:
         return None
+    # FIXME[series]: why uuid_prefix?
+    # FIXME[series]: extract constant
     uuid_prefix = "urn:uuid:"
     if identifier.datatype == XSD.anyURI and identifier.value.startswith(uuid_prefix):
         return identifier.value[len(uuid_prefix) :]

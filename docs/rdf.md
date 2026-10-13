@@ -123,6 +123,8 @@ udata can harvest other RDF/DCAT enabled data portals with the [DCAT Harvester](
 
 ## References
 
+FIXME[series]: review doc
+
 The udata rdf implementation and its harvester were created using these references:
 
 - [Official DCAT Vocabulary documentation][dcat]

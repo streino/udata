@@ -89,6 +89,7 @@ class DcatBackend(BaseBackend):
                 self.graphs.append((page_graph, page_number))
                 self.process_page(page_graph, page_number)
         finally:
+            # FIXME[series]: try/except
             self.references.resolve()
             try:
                 self.store_graphs()
@@ -141,7 +142,7 @@ class DcatBackend(BaseBackend):
             yield page_graph, page_number
             page_number += 1
 
-    # FIXME: DRY
+    # FIXME[series]: DRY
     def process_page(self, graph: Graph, page_number: int):
         for node in self.list_datasets(graph):
             remote_id = None
@@ -223,6 +224,7 @@ class DcatBackend(BaseBackend):
 
         return dataset
 
+    # FIXME[series]: DRY
     def process_dataservice(
         self,
         harvest_item: HarvestItem,

@@ -43,18 +43,22 @@ class HarvestMetadata(EmbeddedDocument):
     archived_reason = field(StringField())
 
 
+# FIXME[series]: add tests?
 class Harvestable(Owned):
     """Base class for the models that can be harvested."""
 
     # Type annotation only: each concrete model declares its own `harvest` field.
     harvest: HarvestMetadata
 
+    # FIXME[series]: add comment
     harvest_metadata_class: type[HarvestMetadata] = HarvestMetadata
 
     def set_harvested(self):
         if not self.harvest:
             self.harvest = self.harvest_metadata_class()
 
+    # FIXME[series]: avoid __setattr__/__getattribute__?
+    # FIXME[series]: coherent func names (pending vs pending_references)
     def add_pending(self, reference: ReferenceKind, data) -> None:
         log.info(f"REFS: add_pending: kind={reference.name}, {data=}")
         pending = PendingReference(owner=self, kind=reference, data=data)
