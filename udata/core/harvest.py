@@ -133,6 +133,7 @@ class PendingRelation(ABC, Generic[H]):
         raise NotImplementedError
 
     # FIXME[series]: standard python object repr
+    # FIXME[series]: self.owner.id always ok
     def __repr__(self):
         return (
             f"PendingRelation(owner={type(self.owner).__name__}({getattr(self.owner, 'id', None)}), "
@@ -161,6 +162,7 @@ class RelationResolver:
             f"pending_kinds={[type(p).__name__ for p in item.pending_relations()]}"
         )
         self._items.append(item)
+        # FIXME[series]: getattr
         if record_uuid := getattr(item, "_remote_record_id", None):
             self._record_uuids[record_uuid] = item
         for relation in item.pending_relations():
