@@ -151,7 +151,9 @@ if resolver is not None:
 ```
 
 The `*_from_rdf` parsers receive the run's `RelationResolver` and record pending relations only
-when one is passed; standalone parsing (no resolver) records nothing.
+when one is passed; standalone parsing (no resolver) records nothing. The resolver groups pending
+relations by owner and, once the run is walked, resolves each owner's relations and persists the
+owner once.
 
 This logic replaces the previous manual graph traversal and guarantees consistent handling across all harvest back‑ends.
 

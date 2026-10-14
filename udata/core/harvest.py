@@ -113,7 +113,7 @@ class PendingRelation(ABC, Generic[H]):
         raise NotImplementedError
 
     @abstractmethod
-    def apply(self, resolver: RelationResolver, targets: Sequence[H]) -> None:
+    def apply(self, targets: Sequence[H]) -> None:
         """Apply the resolved `targets` to `self.owner`."""
         raise NotImplementedError
 
@@ -136,12 +136,18 @@ class RelationResolver:
     context) is passed to it (see `dataset_from_rdf`/`dataservice_from_rdf`), so standalone
     parsing records nothing. The run owner (e.g. the DCAT backend) is responsible for calling
     `resolve()` at the end of the run.
+
+    Pending relations are grouped by their owner. `resolve()` iterates the owners, applies every
+    resolved relation of an owner, then persists that owner once (unless `dryrun`): minimal delay
+    between resolution and save, and a resolution failure only impacts a single owner. The lookup
+    registry only depends on the relation type, so it is built once per type and reused across
+    owners.
     """
 
     def __init__(self, dryrun: bool = False):
         self.dryrun = dryrun
         self._items: list[Harvestable] = []
-        self._pending: dict[type[PendingRelation], list[PendingRelation]] = defaultdict(list)
+        self._pending: dict[Harvestable, list[PendingRelation]] = defaultdict(list)
         # Run-scoped mapping from a record UUID (`isPrimaryTopicOf`/`dct:identifier`) to the
         # item that carries it. Items expose it through a transient `_remote_record_id`
         # attribute that is never persisted, so this mapping only lives for one harvest run.
@@ -162,23 +168,32 @@ class RelationResolver:
             return
         relation = relation_cls(identifiers=identifiers, uris=uris, owner=owner)
         log.info(f"REFS: add_pending_relation: relation={type(relation).__name__}, {relation=}")
-        self._pending[type(relation)].append(relation)
+        self._pending[owner].append(relation)
 
     def resolve(self) -> None:
         log.info("REFS: resolving...")
-        for ref_cls, relations in self._pending.items():
-            registry = self._build_registry(ref_cls)
-            registry.update(self._record_uuids)
-            log.info(f"REFS: resolve: kind={ref_cls.__name__}, {registry=}")
+        # The registry only depends on the relation type, not on the owner, so it is built once
+        # per type and reused across owners.
+        registries: dict[type[PendingRelation], dict[str, Harvestable]] = {}
+        for owner, relations in self._pending.items():
+            mutated = False
             for relation in relations:
-                targets = relation.resolve(registry)
+                ref_cls = type(relation)
+                if ref_cls not in registries:
+                    registry = self._build_registry(ref_cls)
+                    registry.update(self._record_uuids)
+                    registries[ref_cls] = registry
+                targets = relation.resolve(registries[ref_cls])
                 if targets:
                     log.info(
                         f"REFS: resolve: kind={ref_cls.__name__}, "
-                        f"owner={type(relation.owner).__name__}({getattr(relation.owner, 'id', None)}), "
+                        f"owner={type(owner).__name__}({getattr(owner, 'id', None)}), "
                         f"{targets=}"
                     )
-                    relation.apply(self, targets)
+                    relation.apply(targets)
+                    mutated = True
+            if mutated and not self.dryrun:
+                owner.save()
 
     def _build_registry(self, ref_cls: type[PendingRelation]) -> dict[str, Harvestable]:
         registry = {}

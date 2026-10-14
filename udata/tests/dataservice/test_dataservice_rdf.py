@@ -10,7 +10,6 @@ from udata.core.constants import HVD
 from udata.core.dataservices.factories import DataserviceFactory, HarvestMetadataFactory
 from udata.core.dataservices.rdf import ServesDatasetRelation, dataservice_to_rdf
 from udata.core.dataset.factories import DatasetFactory
-from udata.core.harvest import RelationResolver
 from udata.rdf import (
     DCAT,
     DCATAP,
@@ -148,7 +147,7 @@ class ServesDatasetRelationTest(PytestOnlyDBTestCase):
         d2 = DatasetFactory()
         relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        relation.apply(RelationResolver(dryrun=True), [d1, d2])
+        relation.apply([d1, d2])
 
         assert list(owner.datasets) == [d1, d2]
         owner.save.assert_not_called()
@@ -159,20 +158,20 @@ class ServesDatasetRelationTest(PytestOnlyDBTestCase):
         mocker.patch.object(owner, "save")
         relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        relation.apply(RelationResolver(dryrun=True), [d1, d1])
+        relation.apply([d1, d1])
 
         assert list(owner.datasets) == [d1]
         owner.save.assert_not_called()
 
-    def test_apply_live_run_saves(self, mocker):
+    def test_apply_live_run_does_not_save(self, mocker):
         owner = DataserviceFactory()
         mocker.patch.object(owner, "save")
         d1 = DatasetFactory()
         relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        relation.apply(RelationResolver(dryrun=False), [d1])
+        relation.apply([d1])
 
-        owner.save.assert_called_once()
+        owner.save.assert_not_called()
 
     def test_apply_dryrun_does_not_save(self, mocker):
         owner = DataserviceFactory()
@@ -180,6 +179,6 @@ class ServesDatasetRelationTest(PytestOnlyDBTestCase):
         d1 = DatasetFactory()
         relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        relation.apply(RelationResolver(dryrun=True), [d1])
+        relation.apply([d1])
 
         owner.save.assert_not_called()

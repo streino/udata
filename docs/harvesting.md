@@ -52,7 +52,7 @@ FIXME[series]: review doc
 Harvested items are now built in two distinct phases:
 
 1. **Parsing phase** – each RDF node is turned into a model (`Dataset` or `Dataservice`).  The model is created and populated, and any cross‑resource link is stored as a *pending relation* on the run's `RelationResolver` via its `add_pending_relation()` API (the `*_from_rdf` parsers only do this when passed a resolver). No `save()` is performed at this stage.
-2. **Resolution phase** – after all items of a harvest job have been parsed, `RelationResolver` builds a registry of all harvested objects (by `remote_id` and by absolute URI) and resolves each pending relation.  The resolver then updates the owner objects (`Dataset.in_series`, `Dataservice.datasets`, …) and finally persists them (unless the job runs in *dry‑run* mode).
+2. **Resolution phase** – after all items of a harvest job have been parsed, `RelationResolver` builds a lookup registry of all harvested objects (by `remote_id` and by absolute URI) once per relation kind. Pending relations are grouped by owner: it resolves each owner's relations, updates the owner object (`Dataset.in_series`, `Dataservice.datasets`, …), and persists the owner once (unless the job runs in *dry‑run* mode). Resolving per owner keeps a failure local to a single record.
 
 The two‑pass design guarantees that a relation can point to an object that appears later in the same catalog.
 

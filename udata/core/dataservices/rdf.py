@@ -35,13 +35,11 @@ class ServesDatasetRelation(DatasetRelation):
 
     predicate = DCAT.servesDataset
 
-    def apply(self, resolver: RelationResolver, targets: Sequence[Dataset]) -> None:
+    def apply(self, targets: Sequence[Dataset]) -> None:
         for dataset in targets:
             if dataset not in self.owner.datasets:
                 log.info(f"REFS: apply: datasets += Dataset({dataset.id})")
                 self.owner.datasets.append(dataset)
-        if not resolver.dryrun:
-            self.owner.save()
 
 
 def dataservice_from_rdf(

@@ -457,10 +457,8 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         assert without_resolver.extras.get("dcat", {}).get("in_series") is None
 
         resolver = RelationResolver(dryrun=True)
-        dataset_from_rdf(g, resolver=resolver)
-        assert [type(r).__name__ for r in resolver._pending.get(InSeriesRelation, [])] == [
-            "InSeriesRelation"
-        ]
+        with_resolver = dataset_from_rdf(g, resolver=resolver)
+        assert [type(r).__name__ for r in resolver._pending[with_resolver]] == ["InSeriesRelation"]
 
     def test_update(self):
         original = DatasetFactory()
@@ -2641,7 +2639,7 @@ class InSeriesRelationTest(PytestOnlyDBTestCase):
         parent = DatasetFactory()
         relation = InSeriesRelation(identifiers=[], uris=[], owner=child)
 
-        relation.apply(RelationResolver(dryrun=True), [parent])
+        relation.apply([parent])
 
         assert child.extras["dcat"]["in_series"] == str(parent.id)
 
@@ -2649,16 +2647,16 @@ class InSeriesRelationTest(PytestOnlyDBTestCase):
         child = DatasetFactory()
         relation = InSeriesRelation(identifiers=[], uris=[], owner=child)
 
-        relation.apply(RelationResolver(dryrun=True), [])
+        relation.apply([])
 
         assert "dcat" not in child.extras
 
-    def test_apply_live_run_saves(self, mocker):
+    def test_apply_does_not_save(self, mocker):
         child = DatasetFactory()
         mocker.patch.object(child, "save")
         parent = DatasetFactory()
         relation = InSeriesRelation(identifiers=[], uris=[], owner=child)
 
-        relation.apply(RelationResolver(dryrun=False), [parent])
+        relation.apply([parent])
 
-        child.save.assert_called_once()
+        child.save.assert_not_called()

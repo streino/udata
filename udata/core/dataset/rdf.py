@@ -184,15 +184,13 @@ class InSeriesRelation(DatasetRelation):
 
     predicate = DCAT.inSeries
 
-    def apply(self, resolver: RelationResolver, targets: Sequence[Dataset]) -> None:
+    def apply(self, targets: Sequence[Dataset]) -> None:
         if not targets:
             return
         parent = targets[0]
 
         log.info(f"REFS: apply: extras.dcat.in_series = {str(parent.id)}")
         set_dcat_extra(self.owner, "in_series", str(parent.id))
-        if not resolver.dryrun:
-            self.owner.save()
 
 
 FREQ_TERM_TO_UDATA = {

@@ -49,7 +49,7 @@ class FakeRelation(PendingRelation):
     def resolve(self, registry):
         return [registry[k] for k in self.identifiers if k in registry]
 
-    def apply(self, resolver, targets):
+    def apply(self, targets):
         cast(Dataset, self.owner).extras["fake"] = [t.harvest.remote_id for t in targets]
 
 
@@ -61,7 +61,64 @@ class RelationResolverTest:
         resolver.add_pending_relation(source, FakeRelation, node)
         resolver.add_pending_relation(source, FakeRelation, node)
 
-        assert len(resolver._pending[FakeRelation]) == 2
+        assert len(resolver._pending[source]) == 2
+
+    def test_groups_pending_by_owner(self):
+        resolver = RelationResolver(dryrun=True)
+        source1 = build_dataset(remote_id="service1")
+        source2 = build_dataset(remote_id="service2")
+        node = Graph().resource(URIRef("http://ex/service"))
+
+        resolver.add_pending_relation(source1, FakeRelation, node)
+        resolver.add_pending_relation(source2, FakeRelation, node)
+
+        assert len(resolver._pending) == 2
+        assert resolver._pending[source1] is not resolver._pending[source2]
+
+    def test_resolve_saves_each_mutated_owner_once(self, mocker):
+        resolver = RelationResolver(dryrun=False)
+        source = build_dataset(remote_id="service")
+        save = mocker.patch.object(source, "save")
+        target1 = build_dataset(remote_id="d1")
+        target2 = build_dataset(remote_id="d2")
+        node = Graph().resource(URIRef("http://ex/service"))
+        resolver.add_pending_relation(source, FakeRelation, node)
+        resolver.add_pending_relation(source, FakeRelation, node)
+
+        for item in (target1, target2, source):
+            resolver.register(item)
+        resolver.resolve()
+
+        assert source.extras["fake"] == ["d1", "d2"]
+        save.assert_called_once()
+
+    def test_resolve_dryrun_does_not_save(self, mocker):
+        resolver = RelationResolver(dryrun=True)
+        source = build_dataset(remote_id="service")
+        save = mocker.patch.object(source, "save")
+        target = build_dataset(remote_id="d1")
+        node = Graph().resource(URIRef("http://ex/service"))
+        resolver.add_pending_relation(source, FakeRelation, node)
+
+        for item in (target, source):
+            resolver.register(item)
+        resolver.resolve()
+
+        assert source.extras["fake"] == ["d1"]
+        save.assert_not_called()
+
+    def test_resolve_unresolved_owner_is_not_saved(self, mocker):
+        resolver = RelationResolver(dryrun=False)
+        source = build_dataset(remote_id="service")
+        save = mocker.patch.object(source, "save")
+        node = Graph().resource(URIRef("http://ex/service"))
+        resolver.add_pending_relation(source, FakeRelation, node)
+
+        resolver.register(source)
+        resolver.resolve()
+
+        assert "fake" not in source.extras
+        save.assert_not_called()
 
     def test_register_and_collect_resolves(self):
         resolver = RelationResolver(dryrun=True)
