@@ -146,10 +146,12 @@ The returned `PendingRelation` object contains two lists:
 Typical usage inside a parser:
 
 ```python
-rel = InSeriesRelation.from_rdf(resource)
-if rel.uris or rel.identifiers:
-    dataset.add_pending_relation(rel)
+if resolver is not None:
+    resolver.add_pending_relation(dataset, InSeriesRelation, resource)
 ```
+
+The `*_from_rdf` parsers receive the run's `RelationResolver` and record pending relations only
+when one is passed; standalone parsing (no resolver) records nothing.
 
 This logic replaces the previous manual graph traversal and guarantees consistent handling across all harvest back‑ends.
 

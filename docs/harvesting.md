@@ -51,7 +51,7 @@ FIXME[series]: review doc
 
 Harvested items are now built in two distinct phases:
 
-1. **Parsing phase** – each RDF node is turned into a model (`Dataset` or `Dataservice`).  The model is created, populated, and any cross‑resource link is stored as a *pending relation* using the `Harvestable.add_pending_relation()` API. No `save()` is performed at this stage.
+1. **Parsing phase** – each RDF node is turned into a model (`Dataset` or `Dataservice`).  The model is created and populated, and any cross‑resource link is stored as a *pending relation* on the run's `RelationResolver` via its `add_pending_relation()` API (the `*_from_rdf` parsers only do this when passed a resolver). No `save()` is performed at this stage.
 2. **Resolution phase** – after all items of a harvest job have been parsed, `RelationResolver` builds a registry of all harvested objects (by `remote_id` and by absolute URI) and resolves each pending relation.  The resolver then updates the owner objects (`Dataset.in_series`, `Dataservice.datasets`, …) and finally persists them (unless the job runs in *dry‑run* mode).
 
 The two‑pass design guarantees that a relation can point to an object that appears later in the same catalog.
@@ -64,7 +64,7 @@ subclass is its own kind, identified by its `predicate`:
 - **`ServesDatasetRelation`** (`dcat:servesDataset`) – a dataservice serves one or more datasets. The relation is stored in `dataservice.datasets`.
 
 ### Adding a new relation type
-When implementing a new harvest backend you can create a custom `PendingRelation` subclass (see the *Extending udata* doc): set its `predicate` and implement `from_rdf`, `lookup_keys`, `resolve` and `apply`. Use `model.add_pending_relation(rel)` inside the RDF parser.
+When implementing a new harvest backend you can create a custom `PendingRelation` subclass (see the *Extending udata* doc): set its `predicate` and implement `from_rdf`, `lookup_keys`, `resolve` and `apply`. Inside the RDF parser, pass the run's resolver to `*_from_rdf` so it records pending relations via `resolver.add_pending_relation(owner, relation_cls, node)`, and call `resolver.resolve()` at the end of the run.
 
 **Dry‑run behavior** – During a dry‑run the resolver still builds the registry and resolves references, but the final `save()` calls are skipped, letting you validate the whole graph without persisting anything.
 

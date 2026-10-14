@@ -2,11 +2,11 @@
 
 These tests exercise `udata.core.harvest`: the `PendingRelation` base and the
 `RelationResolver`. A lightweight `FakeRelation` subclass drives the generic resolver
-orchestration (register -> build registry -> resolve -> apply) without coupling to a concrete
-relation. Real `Dataset` instances (via `build_dataset`) are used as the harvested items so that
-the real `Harvestable.add_pending_relation` / `Harvestable.pending_relations` are exercised. Two
-end-to-end tests also drive the resolver with the real `InSeriesRelation` to cover run-scoped
-record-UUID resolution. No database is required.
+orchestration (collect -> register -> build registry -> resolve -> apply) without coupling to a
+concrete relation. Real `Dataset` instances (via `build_dataset`) are used as the harvested
+items so that the real `RelationResolver.add_pending_relation` is exercised. Two end-to-end
+tests also drive the resolver with the real `InSeriesRelation` to cover run-scoped record-UUID
+resolution. No database is required.
 """
 
 from typing import cast
@@ -55,19 +55,23 @@ class FakeRelation(PendingRelation):
 
 class RelationResolverTest:
     def test_accumulates_multiple_pending_relations(self):
+        resolver = RelationResolver(dryrun=True)
         source = build_dataset(remote_id="service")
-        source.add_pending_relation(FakeRelation, Graph().resource(URIRef("http://ex/service")))
-        source.add_pending_relation(FakeRelation, Graph().resource(URIRef("http://ex/service")))
+        node = Graph().resource(URIRef("http://ex/service"))
+        resolver.add_pending_relation(source, FakeRelation, node)
+        resolver.add_pending_relation(source, FakeRelation, node)
 
-        assert len(source.pending_relations()) == 2
+        assert len(resolver._pending[FakeRelation]) == 2
 
-    def test_register_collects_pending_and_resolves(self):
+    def test_register_and_collect_resolves(self):
+        resolver = RelationResolver(dryrun=True)
         source = build_dataset(remote_id="service")
-        source.add_pending_relation(FakeRelation, Graph().resource(URIRef("http://ex/service")))
         target1 = build_dataset(remote_id="d1")
         target2 = build_dataset(remote_id="d2")
+        resolver.add_pending_relation(
+            source, FakeRelation, Graph().resource(URIRef("http://ex/service"))
+        )
 
-        resolver = RelationResolver(dryrun=True)
         for item in (target1, target2, source):
             resolver.register(item)
         resolver.resolve()
@@ -84,11 +88,13 @@ class RelationResolverTest:
         assert "fake" not in target.extras
 
     def test_resolve_unknown_target_is_skipped(self):
-        source = build_dataset(remote_id="service")
-        source.add_pending_relation(FakeRelation, Graph().resource(URIRef("http://ex/service")))
-        target1 = build_dataset(remote_id="d1")
-
         resolver = RelationResolver(dryrun=True)
+        source = build_dataset(remote_id="service")
+        target1 = build_dataset(remote_id="d1")
+        resolver.add_pending_relation(
+            source, FakeRelation, Graph().resource(URIRef("http://ex/service"))
+        )
+
         resolver.register(target1)
         resolver.register(source)
         resolver.resolve()
@@ -102,9 +108,11 @@ class RelationResolverTest:
         child = build_dataset(remote_id="child")
         graph = Graph()
         graph.add((URIRef("http://ex/child"), DCAT.inSeries, URIRef("urn:iso19139:parent:12345")))
-        child.add_pending_relation(InSeriesRelation, graph.resource(URIRef("http://ex/child")))
 
         resolver = RelationResolver(dryrun=True)
+        resolver.add_pending_relation(
+            child, InSeriesRelation, graph.resource(URIRef("http://ex/child"))
+        )
         resolver.register(parent)
         resolver.register(child)
         resolver.resolve()
@@ -122,9 +130,11 @@ class RelationResolverTest:
         graph.add(
             (URIRef("http://ex/child"), DCAT.inSeries, URIRef("http://ex/api/records/parent"))
         )
-        child.add_pending_relation(InSeriesRelation, graph.resource(URIRef("http://ex/child")))
 
         resolver = RelationResolver(dryrun=True)
+        resolver.add_pending_relation(
+            child, InSeriesRelation, graph.resource(URIRef("http://ex/child"))
+        )
         resolver.register(parent)
         resolver.register(child)
         resolver.resolve()

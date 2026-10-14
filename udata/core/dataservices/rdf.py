@@ -50,9 +50,16 @@ def dataservice_from_rdf(
     node: Node | None,
     remote_url_prefix: str | None = None,
     dryrun: bool = False,
+    *,
+    resolver: RelationResolver | None = None,
 ) -> Dataservice:
     """
-    Create or update a dataservice from a RDF/DCAT graph
+    Create or update a dataservice from a RDF/DCAT graph.
+
+    Pending references (`dcat:servesDataset`) are only collected when a `RelationResolver`
+    (a harvest run context) is passed: collection and resolution are run-scoped concerns
+    owned by the caller that wants cross-reference resolution. Standalone parsing records
+    nothing.
     """
     if node is None:  # Assume first match is the only match
         node = graph.value(predicate=RDF.type, object=DCAT.DataService)
@@ -97,7 +104,8 @@ def dataservice_from_rdf(
 
     dataservice.tags = themes_from_rdf(d)
 
-    dataservice.add_pending_relation(ServesDatasetRelation, d)
+    if resolver is not None:
+        resolver.add_pending_relation(dataservice, ServesDatasetRelation, d)
 
     return dataservice
 

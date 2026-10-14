@@ -65,21 +65,6 @@ class Harvestable(Owned):
         if not self.harvest:
             self.harvest = self.harvest_metadata_class()
 
-    # FIXME[series]: avoid __setattr__/__getattribute__?
-    def add_pending_relation(self, relation_cls: type[PendingRelation], node: RdfResource) -> None:
-        identifiers, uris = relation_cls.from_rdf(node)
-        if not identifiers and not uris:
-            return
-        relation = relation_cls(identifiers=identifiers, uris=uris, owner=self)
-        log.info(f"REFS: add_pending_relation: relation={type(relation).__name__}, {relation=}")
-        object.__setattr__(self, "_pending_references", self.pending_relations() + [relation])
-
-    def pending_relations(self) -> list[PendingRelation]:
-        try:
-            return object.__getattribute__(self, "_pending_references")
-        except AttributeError:
-            return []
-
 
 H = TypeVar("H", bound="Harvestable")
 
@@ -90,8 +75,8 @@ class PendingRelation(ABC, Generic[H]):
     """A cross-reference between harvested items awaiting resolution; the subclass is its own kind.
 
     `owner` is the harvested item this relation was collected on; it is provided by
-    `Harvestable.add_pending_relation()`, which constructs the relation already attached to its
-    owner.
+    `RelationResolver.add_pending_relation()`, which constructs the relation already attached to
+    its owner.
 
     The class is generic over the type of the *target* items that `resolve()` returns (e.g.
     `Dataset` for `dcat:inSeries`), so subclasses can specialize `resolve`/`apply` precisely.
@@ -143,8 +128,14 @@ class PendingRelation(ABC, Generic[H]):
 
 class RelationResolver:
     """
-    Collect the harvested items (and the pending relations they carry) as they are processed,
+    Collect the harvested items and the pending relations they carry as they are processed,
     then resolve every pending relation once the whole run has been walked.
+
+    Pending-reference collection and resolution are run-scoped concerns. `*_from_rdf` only
+    records pending relations through `add_pending_relation` when this resolver (a harvest run
+    context) is passed to it (see `dataset_from_rdf`/`dataservice_from_rdf`), so standalone
+    parsing records nothing. The run owner (e.g. the DCAT backend) is responsible for calling
+    `resolve()` at the end of the run.
     """
 
     def __init__(self, dryrun: bool = False):
@@ -157,16 +148,21 @@ class RelationResolver:
         self._record_uuids: dict[str, Harvestable] = {}
 
     def register(self, item: Harvestable) -> None:
-        log.info(
-            f"REFS: register: item={type(item).__name__}({getattr(item, 'id', None)}), "
-            f"pending_kinds={[type(p).__name__ for p in item.pending_relations()]}"
-        )
+        log.info(f"REFS: register: item={type(item).__name__}({getattr(item, 'id', None)})")
         self._items.append(item)
         # FIXME[series]: getattr
         if record_uuid := getattr(item, "_remote_record_id", None):
             self._record_uuids[record_uuid] = item
-        for relation in item.pending_relations():
-            self._pending[type(relation)].append(relation)
+
+    def add_pending_relation(
+        self, owner: Harvestable, relation_cls: type[PendingRelation], node: RdfResource
+    ) -> None:
+        identifiers, uris = relation_cls.from_rdf(node)
+        if not identifiers and not uris:
+            return
+        relation = relation_cls(identifiers=identifiers, uris=uris, owner=owner)
+        log.info(f"REFS: add_pending_relation: relation={type(relation).__name__}, {relation=}")
+        self._pending[type(relation)].append(relation)
 
     def resolve(self) -> None:
         log.info("REFS: resolving...")

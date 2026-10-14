@@ -443,6 +443,25 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         assert isinstance(dataset, Dataset)
         assert dataset.title == title
 
+    def test_pending_relation_collected_only_with_resolver(self):
+        node = BNode()
+        parent = URIRef("http://ex/api/records/parent")
+        g = Graph()
+
+        title = faker.sentence()
+        g.add((node, RDF.type, DCAT.Dataset))
+        g.add((node, DCT.title, Literal(title)))
+        g.add((node, DCAT.inSeries, parent))
+
+        without_resolver = dataset_from_rdf(g)
+        assert without_resolver.extras.get("dcat", {}).get("in_series") is None
+
+        resolver = RelationResolver(dryrun=True)
+        dataset_from_rdf(g, resolver=resolver)
+        assert [type(r).__name__ for r in resolver._pending.get(InSeriesRelation, [])] == [
+            "InSeriesRelation"
+        ]
+
     def test_update(self):
         original = DatasetFactory()
 

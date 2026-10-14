@@ -217,7 +217,12 @@ class DcatBackend(BaseBackend):
 
         dataset = self.get_item(harvest_item.remote_id, Dataset)
         dataset = dataset_from_rdf(
-            graph, dataset, node=node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun
+            graph,
+            dataset,
+            node=node,
+            remote_url_prefix=remote_url_prefix,
+            dryrun=self.dryrun,
+            resolver=self.relations,
         )
 
         self.relations.register(dataset)
@@ -242,6 +247,7 @@ class DcatBackend(BaseBackend):
             node,
             remote_url_prefix=remote_url_prefix,
             dryrun=self.dryrun,
+            resolver=self.relations,
         )
 
         self.relations.register(dataservice)

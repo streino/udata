@@ -1066,9 +1066,16 @@ def dataset_from_rdf(
     node: Node | None = None,
     remote_url_prefix: str | None = None,
     dryrun: bool = False,
+    *,
+    resolver: RelationResolver | None = None,
 ):
     """
-    Create or update a dataset from a RDF/DCAT graph
+    Create or update a dataset from a RDF/DCAT graph.
+
+    Pending references (`dcat:inSeries`) are only collected when a `RelationResolver`
+    (a harvest run context) is passed: collection and resolution are run-scoped concerns
+    owned by the caller that wants cross-reference resolution. Standalone parsing (e.g.
+    `commands/dcat.py`, tests) passes no resolver and records nothing.
     """
     dataset = dataset or Dataset()
 
@@ -1201,7 +1208,8 @@ def dataset_from_rdf(
         modified_at, "DCT.modified (dataset)", refuse_future=True
     )
 
-    dataset.add_pending_relation(InSeriesRelation, d)
+    if resolver is not None:
+        resolver.add_pending_relation(dataset, InSeriesRelation, d)
 
     return dataset
 
