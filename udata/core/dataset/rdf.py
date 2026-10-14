@@ -5,7 +5,7 @@ This module centralize dataset helpers for RDF/DCAT serialization and parsing
 import calendar
 import json
 import logging
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime
 from fractions import Fraction
 from itertools import chain
@@ -138,7 +138,7 @@ class DatasetRelation(PendingRelation[Dataset]):
         if item.harvest.uri:
             yield item.harvest.uri
 
-    def resolve(self, registry: dict[str, Harvestable]) -> Sequence[Dataset]:
+    def resolve(self, registry: Mapping[str, Harvestable]) -> Sequence[Dataset]:
         targets = []
 
         # Form 1 — resource reference (standard, e.g. GeoNetwork): the predicate object is the

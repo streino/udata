@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
@@ -123,7 +123,7 @@ class PendingRelation(ABC, Generic[H]):
         raise NotImplementedError
 
     @abstractmethod
-    def resolve(self, registry: dict[str, Harvestable]) -> Sequence[H]:
+    def resolve(self, registry: Mapping[str, Harvestable]) -> Sequence[H]:
         """Return the target items for this collected relation."""
         raise NotImplementedError
 
