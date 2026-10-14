@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, date, datetime, timedelta
 from xml.etree.ElementTree import XML
 
@@ -12,6 +13,7 @@ from udata.core.access_type.constants import AccessType, InspireLimitationCatego
 from udata.core.constants import HVD
 from udata.core.contact_point.factories import ContactPointFactory
 from udata.core.dataservices.factories import DataserviceFactory
+from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.constants import OGC_SERVICE_FORMATS, UpdateFrequency
 from udata.core.dataset.factories import DatasetFactory, LicenseFactory, ResourceFactory
 from udata.core.dataset.models import (
@@ -26,6 +28,8 @@ from udata.core.dataset.models import (
 from udata.core.dataset.rdf import (
     EUFREQ_TERM_TO_UDATA,
     FREQ_TERM_TO_UDATA,
+    DatasetRelation,
+    InSeriesRelation,
     access_right_to_rdf,
     access_rights_from_rdf,
     dataset_from_rdf,
@@ -48,6 +52,7 @@ from udata.core.dataset.rdf import (
     spatial_resolution_from_rdf,
     temporal_from_rdf,
 )
+from udata.core.harvest import RelationResolver
 from udata.core.organization.factories import OrganizationFactory
 from udata.i18n import gettext as _
 from udata.mongo.datetime_fields import DateRange
@@ -2435,3 +2440,206 @@ class DcatHelpersTest:
 
         assert get_unanimous_dcat_extra([], DCT.accessRights) is None
         assert get_unanimous_dcat_extra([r1, r2], "foo") is None
+
+
+def build_dataset(remote_id=None, uri=None, record_uuid=None) -> Dataset:
+    harvest = {}
+    if remote_id:
+        harvest["remote_id"] = remote_id
+    if uri:
+        harvest["uri"] = uri
+    dataset = Dataset(harvest=harvest)
+    if record_uuid:
+        dataset._remote_record_id = record_uuid
+    return dataset
+
+
+class DatasetRelationTest:
+    """Base `DatasetRelation` behavior, exercised through the concrete `InSeriesRelation`."""
+
+    def test_from_rdf_resource_reference_without_identifier_is_a_uri(self):
+        """A `dcat:inSeries` object that is a plain resource URI (no dct:identifier on the node)
+        must be recorded as a URI, not an identifier."""
+        graph = Graph()
+        node = URIRef("http://ex/child")
+        parent = URIRef("http://ex/api/records/parent")
+        graph.add((node, DCAT.inSeries, parent))
+
+        identifiers, uris = InSeriesRelation.from_rdf(graph.resource(node))
+
+        assert identifiers == []
+        assert uris == ["http://ex/api/records/parent"]
+
+    def test_from_rdf_inline_blank_node_with_identifier_captured(self, caplog):
+        """An inline blank node carrying a `dct:identifier` is treated leniently as an identifier."""
+        graph = Graph()
+        node = URIRef("http://ex/child")
+        inline = BNode()
+        graph.add((node, DCAT.inSeries, inline))
+        graph.add((inline, DCT.identifier, Literal("ignored")))
+        with caplog.at_level(logging.WARNING):
+            identifiers, uris = InSeriesRelation.from_rdf(graph.resource(node))
+        assert identifiers == ["ignored"]
+        assert uris == []
+        assert not any("Ignoring inline" in rec.message for rec in caplog.records)
+
+    def test_from_rdf_blank_node_without_identifier_ignored_with_warning(self, caplog):
+        """A blank node without a `dct:identifier` (and no rdf:resource) is ignored with a warning."""
+        graph = Graph()
+        node = URIRef("http://ex/child")
+        blank = BNode()
+        graph.add((node, DCAT.inSeries, blank))
+        with caplog.at_level(logging.WARNING):
+            identifiers, uris = InSeriesRelation.from_rdf(graph.resource(node))
+        assert identifiers == []
+        assert uris == []
+        assert any("Ignoring inline" in rec.message for rec in caplog.records)
+
+    def test_from_rdf_literal_value_captured_as_identifier(self, caplog):
+        """A literal object is treated leniently as an identifier."""
+        graph = Graph()
+        node = URIRef("http://ex/child")
+        graph.add((node, DCAT.inSeries, Literal("urn:iso19139:parent:12345")))
+        with caplog.at_level(logging.WARNING):
+            identifiers, uris = InSeriesRelation.from_rdf(graph.resource(node))
+        assert identifiers == ["urn:iso19139:parent:12345"]
+        assert uris == []
+        assert not any("Ignoring inline" in rec.message for rec in caplog.records)
+
+    def test_lookup_keys_uses_remote_id_and_uri(self):
+        dataset = build_dataset(remote_id="1", uri="http://ex/1")
+
+        assert set(DatasetRelation.lookup_keys(dataset)) == {"1", "http://ex/1"}
+
+    def test_lookup_keys_ignores_non_datasets(self):
+        service = Dataservice(harvest={"remote_id": "s"})
+
+        assert list(DatasetRelation.lookup_keys(service)) == []
+
+    def test_lookup_keys_ignores_missing_harvest(self):
+        assert list(DatasetRelation.lookup_keys(Dataset())) == []
+
+    def test_resolve_by_identifier_exact(self):
+        d1 = build_dataset(remote_id="1")
+        d2 = build_dataset(remote_id="2")
+        registry = {"1": d1, "2": d2}
+
+        targets = InSeriesRelation(identifiers=["2"], uris=[], owner=build_dataset()).resolve(
+            registry
+        )
+
+        assert targets == [d2]
+
+    def test_resolve_endswith_fallback(self):
+        d1 = build_dataset(remote_id="http://data.test.org/1")
+        registry = {"http://data.test.org/1": d1}
+
+        targets = InSeriesRelation(identifiers=["1"], uris=[], owner=build_dataset()).resolve(
+            registry
+        )
+
+        assert targets == [d1]
+
+    def test_resolve_by_uri(self):
+        d1 = build_dataset(uri="http://ex/1")
+        registry = {"http://ex/1": d1}
+
+        targets = InSeriesRelation(
+            identifiers=[], uris=["http://ex/1"], owner=build_dataset()
+        ).resolve(registry)
+
+        assert targets == [d1]
+
+    def test_resolve_by_resource_uri(self):
+        """A standard resource reference (parent reachable only through its resource URI, no
+        dct:identifier) resolves against the harvested parent's `harvest.uri`."""
+        parent = build_dataset(uri="http://ex/api/records/parent")
+        registry = {"http://ex/api/records/parent": parent}
+
+        targets = InSeriesRelation(
+            identifiers=[], uris=["http://ex/api/records/parent"], owner=build_dataset()
+        ).resolve(registry)
+
+        assert targets == [parent]
+
+    def test_resolve_resource_uri_unknown(self):
+        """An unknown resource URI yields no target (and must not fall through to the record
+        reference branch, which only handles `urn:iso19139:*` URIs)."""
+        parent = build_dataset(uri="http://ex/api/records/parent", record_uuid="12345")
+        registry = {"http://ex/api/records/parent": parent, "12345": parent}
+
+        targets = InSeriesRelation(
+            identifiers=[], uris=["http://ex/api/records/other"], owner=build_dataset()
+        ).resolve(registry)
+
+        assert targets == []
+
+    def test_resolve_dedups(self):
+        d1 = build_dataset(remote_id="1", uri="http://ex/1")
+        registry = {"1": d1, "http://ex/1": d1}
+
+        targets = InSeriesRelation(
+            identifiers=["1"], uris=["http://ex/1"], owner=build_dataset()
+        ).resolve(registry)
+
+        assert targets == [d1]
+
+    def test_resolve_unknown_returns_empty(self):
+        registry = {"1": build_dataset(remote_id="1")}
+
+        targets = InSeriesRelation(identifiers=["nope"], uris=[], owner=build_dataset()).resolve(
+            registry
+        )
+
+        assert targets == []
+
+    def test_resolve_by_iso19139_parent_urn(self):
+        """A `urn:iso19139:parent:<uuid>` URI resolves to the dataset carrying that record UUID."""
+        parent = build_dataset(remote_id="series", record_uuid="12345")
+        registry = {"series": parent, "12345": parent}
+
+        targets = InSeriesRelation(
+            identifiers=[], uris=["urn:iso19139:parent:12345"], owner=build_dataset()
+        ).resolve(registry)
+
+        assert targets == [parent]
+
+    def test_resolve_iso19139_parent_urn_unknown_uuid(self):
+        """An unresolvable `urn:iso19139:parent:<uuid>` URI yields no target."""
+        parent = build_dataset(remote_id="series", record_uuid="12345")
+        registry = {"series": parent, "12345": parent}
+
+        targets = InSeriesRelation(
+            identifiers=[], uris=["urn:iso19139:parent:unknown"], owner=build_dataset()
+        ).resolve(registry)
+
+        assert targets == []
+
+
+class InSeriesRelationTest(PytestOnlyDBTestCase):
+    def test_apply_sets_in_series_extra(self):
+        child = DatasetFactory()
+        parent = DatasetFactory()
+        relation = InSeriesRelation(identifiers=[], uris=[], owner=child)
+
+        relation.apply(RelationResolver(dryrun=True), [parent])
+
+        assert child.extras["dcat"]["in_series"] == str(parent.id)
+
+    def test_apply_empty_targets_is_noop(self):
+        child = DatasetFactory()
+        relation = InSeriesRelation(identifiers=[], uris=[], owner=child)
+
+        relation.apply(RelationResolver(dryrun=True), [])
+
+        assert "dcat" not in child.extras
+
+    def test_apply_live_run_saves(self, mocker):
+        child = DatasetFactory()
+        mocker.patch.object(child, "save")
+        parent = DatasetFactory()
+        relation = InSeriesRelation(identifiers=[], uris=[], owner=child)
+
+        relation.apply(RelationResolver(dryrun=False), [parent])
+
+        child.save.assert_called_once()

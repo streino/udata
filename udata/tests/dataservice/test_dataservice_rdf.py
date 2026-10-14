@@ -8,8 +8,9 @@ from rdflib.resource import Resource as RdfResource
 
 from udata.core.constants import HVD
 from udata.core.dataservices.factories import DataserviceFactory, HarvestMetadataFactory
-from udata.core.dataservices.rdf import dataservice_to_rdf
+from udata.core.dataservices.rdf import ServesDatasetRelation, dataservice_to_rdf
 from udata.core.dataset.factories import DatasetFactory
+from udata.core.harvest import RelationResolver
 from udata.rdf import (
     DCAT,
     DCATAP,
@@ -17,7 +18,7 @@ from udata.rdf import (
     HVD_LEGISLATION,
     TAG_TO_EU_HVD_CATEGORIES,
 )
-from udata.tests.api import PytestOnlyAPITestCase
+from udata.tests.api import PytestOnlyAPITestCase, PytestOnlyDBTestCase
 from udata.tests.helpers import assert200, assert_redirects
 
 
@@ -137,3 +138,48 @@ class DataserviceRdfViewsTest(PytestOnlyAPITestCase):
         response = client.get(url, headers={"Accept": mime})
         assert200(response)
         assert response.content_type == mime
+
+
+class ServesDatasetRelationTest(PytestOnlyDBTestCase):
+    def test_apply_appends_targets(self, mocker):
+        owner = DataserviceFactory()
+        mocker.patch.object(owner, "save")
+        d1 = DatasetFactory()
+        d2 = DatasetFactory()
+        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
+
+        relation.apply(RelationResolver(dryrun=True), [d1, d2])
+
+        assert list(owner.datasets) == [d1, d2]
+        owner.save.assert_not_called()
+
+    def test_apply_dedups_existing(self, mocker):
+        d1 = DatasetFactory()
+        owner = DataserviceFactory(datasets=[d1])
+        mocker.patch.object(owner, "save")
+        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
+
+        relation.apply(RelationResolver(dryrun=True), [d1, d1])
+
+        assert list(owner.datasets) == [d1]
+        owner.save.assert_not_called()
+
+    def test_apply_live_run_saves(self, mocker):
+        owner = DataserviceFactory()
+        mocker.patch.object(owner, "save")
+        d1 = DatasetFactory()
+        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
+
+        relation.apply(RelationResolver(dryrun=False), [d1])
+
+        owner.save.assert_called_once()
+
+    def test_apply_dryrun_does_not_save(self, mocker):
+        owner = DataserviceFactory()
+        mocker.patch.object(owner, "save")
+        d1 = DatasetFactory()
+        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
+
+        relation.apply(RelationResolver(dryrun=True), [d1])
+
+        owner.save.assert_not_called()
