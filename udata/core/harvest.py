@@ -101,6 +101,7 @@ class PendingRelation(ABC, Generic[H]):
         on an rdflib `Resource`."""
         raise NotImplementedError
 
+    # FIXME[series]: rename to registry_keys, identifiers/ids, ...?
     @classmethod
     @abstractmethod
     def lookup_keys(cls, item: Harvestable) -> Iterator[str]:
@@ -112,6 +113,7 @@ class PendingRelation(ABC, Generic[H]):
         """Return the target items for this collected relation."""
         raise NotImplementedError
 
+    # FIXME[series]: rename to update?
     @abstractmethod
     def apply(self, targets: Sequence[H]) -> None:
         """Apply the resolved `targets` to `self.owner`."""
