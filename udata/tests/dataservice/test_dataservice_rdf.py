@@ -2,14 +2,20 @@ from xml.etree.ElementTree import XML
 
 import pytest
 from flask import url_for
-from rdflib import BNode, Literal, URIRef
+from rdflib import BNode, Graph, Literal, URIRef
 from rdflib.namespace import RDF
 from rdflib.resource import Resource as RdfResource
 
 from udata.core.constants import HVD
 from udata.core.dataservices.factories import DataserviceFactory, HarvestMetadataFactory
-from udata.core.dataservices.rdf import ServesDatasetRelation, dataservice_to_rdf
+from udata.core.dataservices.models import Dataservice
+from udata.core.dataservices.rdf import (
+    ServesDatasetRelation,
+    dataservice_from_rdf,
+    dataservice_to_rdf,
+)
 from udata.core.dataset.factories import DatasetFactory
+from udata.core.harvest import RelationResolver
 from udata.rdf import (
     DCAT,
     DCATAP,
@@ -19,6 +25,7 @@ from udata.rdf import (
 )
 from udata.tests.api import PytestOnlyAPITestCase, PytestOnlyDBTestCase
 from udata.tests.helpers import assert200, assert_redirects
+from udata.utils import faker
 
 
 class DataserviceToRdfTest(PytestOnlyAPITestCase):
@@ -84,6 +91,41 @@ class DataserviceToRdfTest(PytestOnlyAPITestCase):
         assert URIRef(TAG_TO_EU_HVD_CATEGORIES["meteorologiques"]) not in hvd_categories
         for distrib in d.objects(DCAT.distribution):
             assert distrib.value(DCATAP.applicableLegislation).identifier == URIRef(HVD_LEGISLATION)
+
+
+class DataserviceFromRdfTest(PytestOnlyDBTestCase):
+    def test_minimal(self):
+        node = BNode()
+        g = Graph()
+
+        title = faker.sentence()
+        g.add((node, RDF.type, DCAT.DataService))
+        g.add((node, DCT.title, Literal(title)))
+
+        dataservice = dataservice_from_rdf(g, Dataservice(), node)
+        dataservice.validate()
+
+        assert isinstance(dataservice, Dataservice)
+        assert dataservice.title == title
+
+    def test_pending_relation_collected_only_with_resolver(self):
+        node = BNode()
+        dataset = URIRef("http://ex/api/records/dataset")
+        g = Graph()
+
+        title = faker.sentence()
+        g.add((node, RDF.type, DCAT.DataService))
+        g.add((node, DCT.title, Literal(title)))
+        g.add((node, DCAT.servesDataset, dataset))
+
+        without_resolver = dataservice_from_rdf(g, Dataservice(), node)
+        assert without_resolver.datasets == []
+
+        resolver = RelationResolver(dryrun=True)
+        with_resolver = dataservice_from_rdf(g, Dataservice(), node, resolver=resolver)
+        assert [type(r).__name__ for r in resolver._pending[with_resolver]] == [
+            "ServesDatasetRelation"
+        ]
 
 
 class DataserviceRdfViewsTest(PytestOnlyAPITestCase):
