@@ -64,7 +64,21 @@ subclass is its own kind, identified by its `predicate`:
 - **`ServesDatasetRelation`** (`dcat:servesDataset`) – a dataservice serves one or more datasets. The relation is stored in `dataservice.datasets`.
 
 ### Adding a new relation type
-When implementing a new harvest backend you can create a custom `PendingRelation` subclass (see the *Extending udata* doc): set its `predicate` and implement `from_rdf`, `lookup_keys`, `resolve` and `apply`. Inside the RDF parser, pass the run's resolver to `*_from_rdf` so it records pending relations via `resolver.add_pending_relation(owner, relation_cls, node)`, and call `resolver.resolve()` at the end of the run.
+When implementing a new harvest backend you can create a custom `PendingRelation` subclass (see the *Extending udata* doc): set its `predicate` and implement `from_rdf`, `lookup_keys`, `resolve` and `apply`. Inside the RDF parser, pass the run's resolver to `*_from_rdf` so it records pending relations via `resolver.add_pending_relation(owner, relation_cls, node)`, and call `resolver.resolve()` once the run has been walked — e.g. from the backend's `inner_harvest` `finally` (see below).
+
+For example, the DCAT backend resolves relations from its `inner_harvest` `finally`, so they are always executed even when the main loop fails part-way through:
+
+```python
+def inner_harvest(self):
+    try:
+        # walk + process records...
+        ...
+    finally:
+        with self.failsafe("resolve relations"):
+            self.relations.resolve()
+```
+
+`BaseBackend.failsafe(label, *, job_error=True)` runs a finalizer step so it can never crash the run or block later steps: if the body raises, the failure is logged and (when `job_error` is true) recorded as a `HarvestError`, and does **not** propagate. Use one `failsafe` block per step so a failing step never prevents the next one (e.g. a `resolve()` failure must not stop `store_graphs()`). Set `job_error=False` for steps that should only be logged, like `harvest()`'s org-metrics update.
 
 **Dry‑run behavior** – During a dry‑run the resolver still builds the registry and resolves references, but the final `save()` calls are skipped, letting you validate the whole graph without persisting anything.
 

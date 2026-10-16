@@ -1,7 +1,8 @@
 import logging
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from itertools import chain
 from typing import Concatenate, ParamSpec, TypeVar
@@ -274,11 +275,8 @@ class BaseBackend(ABC):
             )
 
         finally:
-            try:
+            with self.failsafe("update harvested organizations", job_error=False):
                 self.update_harvested_organizations()
-            except Exception as e:
-                # Unexpected exception (potential udata bug) => Sentry
-                log.exception(e)
 
             self.end_job()
 
@@ -432,6 +430,25 @@ class BaseBackend(ABC):
         # Clean harvest_activity_user on global context
         if hasattr(g, "harvest_activity_user"):
             delattr(g, "harvest_activity_user")
+
+    @contextmanager
+    def failsafe(self, label: str, *, job_error: bool = True) -> Generator[None]:
+        """Run a finalizer step so it can't crash the run or block later steps.
+
+        The body always runs; if it raises, the failure is logged and (when
+        `job_error` is true) recorded as a `HarvestError`, and does not
+        propagate — so the next finalizer still executes. Used in a backend's
+        `inner_harvest` `finally` and in `harvest()`'s `finally`.
+        """
+        try:
+            yield
+        except Exception as e:
+            # Unexpected exception (potential udata bug) => Sentry
+            log.exception(f"{label} failed: {safe_unicode(e)}")
+            if job_error:
+                self.job.errors.append(
+                    HarvestError(message=safe_unicode(e), details=traceback.format_exc())
+                )
 
     def update_harvested_organizations(self):
         if self.dryrun:

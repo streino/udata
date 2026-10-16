@@ -315,6 +315,48 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         # The record UUID must not leak into the persisted model.
         assert not hasattr(parent, "_remote_record_id")
 
+    def test_inner_harvest_resolve_failure_still_stores_graphs(self, rmock, mocker):
+        """A resolve() failure in the finally must not prevent store_graphs()
+        from running, and must be recorded as a job error."""
+        rmock.get("https://example.com/schemas", json=ResourceSchemaMockData.get_mock_data())
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series.xml"),
+            organization=OrganizationFactory(),
+        )
+        backend = get_backend("dcat")(source)
+        backend.job = HarvestJob()
+        backend.relations.resolve = mocker.Mock(side_effect=Exception("resolve-failed"))
+        store_graphs = mocker.patch.object(backend, "store_graphs")
+
+        backend.inner_harvest()
+
+        store_graphs.assert_called_once()
+        assert any(e.message == "resolve-failed" for e in backend.job.errors)
+        # the resolve failure is recorded, not re-raised, so the run can finish
+        assert backend.job.errors[0].details  # contains the traceback
+
+    def test_inner_harvest_finalizers_run_on_main_loop_exception(self, rmock, mocker):
+        """The finally runs resolve+store_graphs even when the main walk loop raises."""
+        rmock.get("https://example.com/schemas", json=ResourceSchemaMockData.get_mock_data())
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series.xml"),
+            organization=OrganizationFactory(),
+        )
+        backend = get_backend("dcat")(source)
+        backend.job = HarvestJob()
+        backend.walk_paginated_graph = mocker.Mock(side_effect=Exception("walk-failed"))
+        resolve = mocker.Mock()
+        backend.relations.resolve = resolve
+        store_graphs = mocker.patch.object(backend, "store_graphs")
+
+        with pytest.raises(Exception, match="walk-failed"):
+            backend.inner_harvest()
+
+        resolve.assert_called_once()
+        store_graphs.assert_called_once()
+
     def test_harvest_dataservices_keep_attached_associated_datasets(self, rmock):
         """It should update the existing list of dataservice.datasets and not overwrite existing ones"""
 

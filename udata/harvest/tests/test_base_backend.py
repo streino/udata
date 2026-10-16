@@ -1096,6 +1096,9 @@ class BaseBackendTest(PytestOnlyDBTestCase):
             job = backend.harvest()
 
             assert job.status == "done"
+            # update_harvested_organizations runs failsafe with job_error=False,
+            # so its failure is logged but not recorded as a job error.
+            assert job.errors == []
             # ensure end_job is fully executed
             assert job.ended is not None
             signals[pre_save].assert_called_with(HarvestJob, document=job)
@@ -1103,6 +1106,28 @@ class BaseBackendTest(PytestOnlyDBTestCase):
         finally:
             for signal, receiver in signals.items():
                 signal.disconnect(receiver)
+
+    def test_failsafe_records_job_error(self):
+        # A failsafe body failure with job_error=True is recorded as a HarvestError
+        # and does not propagate to the caller.
+        backend = MockBackend(HarvestSourceFactory())
+        backend.job = HarvestJob()
+
+        with backend.failsafe("some step"):
+            raise ValueError("boom")
+
+        assert len(backend.job.errors) == 1
+        assert backend.job.errors[0].message == "boom"
+        assert backend.job.errors[0].details  # contains the traceback
+
+    def test_failsafe_job_error_false_logs_only(self):
+        backend = MockBackend(HarvestSourceFactory())
+        backend.job = HarvestJob()
+
+        with backend.failsafe("some step", job_error=False):
+            raise ValueError("boom")
+
+        assert backend.job.errors == []
 
 
 class HarvestItemLogsTest(PytestOnlyDBTestCase):
