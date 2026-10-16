@@ -66,7 +66,7 @@ class Harvestable(Owned):
             self.harvest = self.harvest_metadata_class()
 
 
-H = TypeVar("H", bound="Harvestable")
+H = TypeVar("H", bound=Harvestable)
 
 
 # FIXME[series]: improve comments
