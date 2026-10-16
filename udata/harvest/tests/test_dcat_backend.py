@@ -5,6 +5,8 @@ from datetime import date
 
 import pytest
 from flask import current_app, url_for
+from rdflib import Graph, Literal, URIRef
+from rdflib.namespace import RDF
 
 from udata.core.access_type.constants import AccessType, InspireLimitationCategory
 from udata.core.dataservices.factories import DataserviceFactory
@@ -13,9 +15,10 @@ from udata.core.dataset.constants import UpdateFrequency
 from udata.core.dataset.factories import DatasetFactory, LicenseFactory, ResourceSchemaMockData
 from udata.core.organization.factories import OrganizationFactory
 from udata.harvest.backends import get_backend
-from udata.harvest.backends.dcat import CswDcatBackend
+from udata.harvest.backends.dcat import CswDcatBackend, DcatBackend
 from udata.harvest.models import HarvestJob
 from udata.models import Dataset
+from udata.rdf import DCAT, DCT
 from udata.storage.s3 import get_from_json
 from udata.tests.api import PytestOnlyAPITestCase, PytestOnlyDBTestCase
 from udata.tests.helpers import argvalues, assert200
@@ -1825,3 +1828,48 @@ class CswDcatBackendI18nTest(PytestOnlyAPITestCase):
         assert [f["description"] for f in backend["features"]] == [
             "Requêter GeoDCAT-AP auprès du serveur CSW (doit être supporté par le serveur)."
         ]
+
+
+class RemoteIdTest:
+    """DB-free unit tests for `DcatBackend.remote_id`."""
+
+    def setup_method(self):
+        self.backend = DcatBackend.__new__(DcatBackend)
+
+        self.graph = Graph()
+        for node in (
+            "http://x/ds/id",
+            "http://x/svc/id",
+            "http://x/ds/no-id",
+            "http://x/svc/no-id",
+        ):
+            self.graph.add((URIRef(node), RDF.type, DCAT.Dataset))
+        # Service nodes are typed DataService; re-type the two service nodes.
+        self.graph.remove((URIRef("http://x/svc/id"), RDF.type, DCAT.Dataset))
+        self.graph.remove((URIRef("http://x/svc/no-id"), RDF.type, DCAT.Dataset))
+        self.graph.add((URIRef("http://x/svc/id"), RDF.type, DCAT.DataService))
+        self.graph.add((URIRef("http://x/svc/no-id"), RDF.type, DCAT.DataService))
+        self.graph.add((URIRef("http://x/ds/id"), DCT.identifier, Literal("ds-id")))
+        self.graph.add((URIRef("http://x/svc/id"), DCT.identifier, Literal("svc-id")))
+
+    def test_remote_id_uses_identifier(self):
+        assert self.backend.remote_id(URIRef("http://x/ds/id"), self.graph) == "ds-id"
+        assert self.backend.remote_id(URIRef("http://x/svc/id"), self.graph) == "svc-id"
+
+    def test_remote_id_falls_back_to_uri_for_datasets(self):
+        # A URIRef dataset without dct:identifier is identified by its node URI.
+        assert (
+            self.backend.remote_id(URIRef("http://x/ds/no-id"), self.graph) == "http://x/ds/no-id"
+        )
+
+    def test_remote_id_no_fallback_when_disabled(self):
+        # Dataservices currently don't fall back to the node URI (FIXME[series]:
+        # consolidate behavior?) — they yield no remote_id and are skipped.
+        assert (
+            self.backend.remote_id(URIRef("http://x/svc/no-id"), self.graph, fallback_to_uri=False)
+            is None
+        )
+        assert (
+            self.backend.remote_id(URIRef("http://x/ds/no-id"), self.graph, fallback_to_uri=False)
+            is None
+        )

@@ -2,7 +2,7 @@ import logging
 import traceback
 from abc import ABC, abstractmethod
 from datetime import date
-from typing import ClassVar, Generator
+from typing import Callable, ClassVar, Generator, TypeVar
 
 from flask import current_app
 from rdflib import Graph, Node, URIRef
@@ -15,7 +15,7 @@ from udata.core.dataservices.models import Dataservice
 from udata.core.dataservices.rdf import dataservice_from_rdf
 from udata.core.dataset.models import Dataset
 from udata.core.dataset.rdf import dataset_from_rdf
-from udata.core.harvest import RelationResolver
+from udata.core.harvest import Harvestable, RelationResolver
 from udata.harvest.models import HarvestError, HarvestItem
 from udata.i18n import lazy_gettext as _
 from udata.rdf import (
@@ -63,6 +63,7 @@ URIS_TO_REPLACE = {
 }
 
 
+# FIXME: unused?
 def extract_graph(source, target, node, specs):
     for p, o in source.predicate_objects(node):
         target.add((node, p, o))
@@ -70,6 +71,10 @@ def extract_graph(source, target, node, specs):
             extract_graph(source, target, o, specs[p])
 
 
+H = TypeVar("H", bound=Harvestable)
+
+
+# FIXME[series]: reorganize structure
 class DcatBackend(BaseBackend):
     name = "dcat"
     display_name = "DCAT"
@@ -137,23 +142,41 @@ class DcatBackend(BaseBackend):
             yield page_graph, page_number
             page_number += 1
 
-    # FIXME[series]: DRY
     def process_page(self, graph: Graph, page_number: int):
         for node in self.list_datasets(graph):
-            remote_id = None
-            if v := graph.value(node, DCT.identifier):
-                remote_id = str(v)
-            elif isinstance(node, URIRef):
-                # Fallback to the node's URI when no dct:identifier is present.
-                remote_id = str(node)
             self.process_item(
-                remote_id, self.process_dataset, node=node, graph=graph, page_number=page_number
+                self.remote_id(node, graph),
+                self.item_processor,
+                node=node,
+                graph=graph,
+                page_number=page_number,
+                from_rdf=dataset_from_rdf,
+                model=Dataset,
             )
         for node in self.list_dataservices(graph):
-            remote_id = str(v) if (v := graph.value(node, DCT.identifier)) else None
             self.process_item(
-                remote_id, self.process_dataservice, node=node, graph=graph, page_number=page_number
+                self.remote_id(node, graph, fallback_to_uri=False),
+                self.item_processor,
+                node=node,
+                graph=graph,
+                page_number=page_number,
+                from_rdf=dataservice_from_rdf,
+                model=Dataservice,
             )
+
+    def remote_id(self, node: Node, graph: Graph, *, fallback_to_uri: bool = True) -> str | None:
+        """The remote ID of a node: its `dct:identifier`, else its node URI.
+
+        Datasets fall back to the node's URI when no `dct:identifier` is present (a node can be
+        referenced by URI only). Dataservices currently don't (they are skipped without an
+        identifier).
+        # FIXME[series]: consolidate behavior?
+        """
+        if v := graph.value(node, DCT.identifier):
+            return str(v)
+        if fallback_to_uri and isinstance(node, URIRef):
+            return str(node)
+        return None
 
     def list_datasets(self, graph: Graph):
         # Manually deduplicate subjects to ensure a node is only processed once.
@@ -200,54 +223,39 @@ class DcatBackend(BaseBackend):
             predicates[0] == DCAT.servesDataset or predicates[0] == DCT.hasPart
         )
 
-    def process_dataset(
+    def item_processor(
         self,
         harvest_item: HarvestItem,
         node: Node,
         graph: Graph,
         page_number: int,
-    ) -> Dataset:
+        *,
+        from_rdf: Callable[..., H],
+        model: type[H],
+    ) -> H:
+        """Get-or-create an item by remote ID, parse it from RDF, and register it with the resolver.
+
+        # FIXME[series]: align the *_from_rdf signatures (param naming / optionality).
+        `dataset_from_rdf` and `dataservice_from_rdf` share this shape but differ in param
+        names/defaulting (see each definition); normalized here via `Callable`.
+        """
         harvest_item.kwargs["page_number"] = page_number
         remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
 
-        dataset = self.get_item(harvest_item.remote_id, Dataset)
-        dataset = dataset_from_rdf(
+        item = self.get_item(harvest_item.remote_id, model)
+
+        item = from_rdf(
             graph,
-            dataset,
-            node=node,
-            remote_url_prefix=remote_url_prefix,
-            dryrun=self.dryrun,
-            resolver=self.relations,
-        )
-
-        self.relations.register(dataset)
-
-        return dataset
-
-    # FIXME[series]: DRY
-    def process_dataservice(
-        self,
-        harvest_item: HarvestItem,
-        node: Node,
-        graph: Graph,
-        page_number: int,
-    ) -> Dataservice:
-        harvest_item.kwargs["page_number"] = page_number
-        remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
-
-        dataservice = self.get_item(harvest_item.remote_id, Dataservice)
-        dataservice = dataservice_from_rdf(
-            graph,
-            dataservice,
+            item,
             node,
             remote_url_prefix=remote_url_prefix,
             dryrun=self.dryrun,
             resolver=self.relations,
         )
 
-        self.relations.register(dataservice)
+        self.relations.register(item)
 
-        return dataservice
+        return item
 
     def store_graphs(self):
         # The official MongoDB document size in 16MB. The default value here is 15MB to account
