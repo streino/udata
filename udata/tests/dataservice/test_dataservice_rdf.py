@@ -15,7 +15,6 @@ from udata.core.dataservices.rdf import (
     dataservice_to_rdf,
 )
 from udata.core.dataset.factories import DatasetFactory
-from udata.core.harvest import RelationResolver
 from udata.rdf import (
     DCAT,
     DCATAP,
@@ -102,13 +101,13 @@ class DataserviceFromRdfTest(PytestOnlyDBTestCase):
         g.add((node, RDF.type, DCAT.DataService))
         g.add((node, DCT.title, Literal(title)))
 
-        dataservice = dataservice_from_rdf(g, Dataservice(), node)
+        dataservice, _ = dataservice_from_rdf(g, Dataservice(), node)
         dataservice.validate()
 
         assert isinstance(dataservice, Dataservice)
         assert dataservice.title == title
 
-    def test_pending_relation_collected_only_with_resolver(self):
+    def test_returns_pending_relation_value(self):
         node = BNode()
         dataset = URIRef("http://ex/api/records/dataset")
         g = Graph()
@@ -118,14 +117,9 @@ class DataserviceFromRdfTest(PytestOnlyDBTestCase):
         g.add((node, DCT.title, Literal(title)))
         g.add((node, DCAT.servesDataset, dataset))
 
-        without_resolver = dataservice_from_rdf(g, Dataservice(), node)
-        assert without_resolver.datasets == []
-
-        resolver = RelationResolver(dryrun=True)
-        with_resolver = dataservice_from_rdf(g, Dataservice(), node, resolver=resolver)
-        assert [type(r).__name__ for r in resolver._pending[with_resolver]] == [
-            "ServesDatasetRelation"
-        ]
+        dataservice, relations = dataservice_from_rdf(g, Dataservice(), node)
+        assert dataservice.datasets == []
+        assert [type(r.relation_cls).__name__ for r in relations] == ["ServesDatasetRelation"]
 
 
 class DataserviceRdfViewsTest(PytestOnlyAPITestCase):
@@ -187,9 +181,8 @@ class ServesDatasetRelationTest(PytestOnlyDBTestCase):
         mocker.patch.object(owner, "save")
         d1 = DatasetFactory()
         d2 = DatasetFactory()
-        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        relation.apply([d1, d2])
+        ServesDatasetRelation.apply(owner, [d1, d2])
 
         assert list(owner.datasets) == [d1, d2]
         owner.save.assert_not_called()
@@ -198,9 +191,8 @@ class ServesDatasetRelationTest(PytestOnlyDBTestCase):
         d1 = DatasetFactory()
         owner = DataserviceFactory(datasets=[d1])
         mocker.patch.object(owner, "save")
-        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        relation.apply([d1, d1])
+        ServesDatasetRelation.apply(owner, [d1, d1])
 
         assert list(owner.datasets) == [d1]
         owner.save.assert_not_called()
@@ -209,9 +201,8 @@ class ServesDatasetRelationTest(PytestOnlyDBTestCase):
         owner = DataserviceFactory()
         mocker.patch.object(owner, "save")
         d1 = DatasetFactory()
-        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        relation.apply([d1])
+        ServesDatasetRelation.apply(owner, [d1])
 
         owner.save.assert_not_called()
 
@@ -219,8 +210,7 @@ class ServesDatasetRelationTest(PytestOnlyDBTestCase):
         owner = DataserviceFactory()
         mocker.patch.object(owner, "save")
         d1 = DatasetFactory()
-        relation = ServesDatasetRelation(identifiers=[], uris=[], owner=owner)
 
-        relation.apply([d1])
+        ServesDatasetRelation.apply(owner, [d1])
 
         owner.save.assert_not_called()

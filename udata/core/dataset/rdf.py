@@ -5,7 +5,7 @@ This module centralize dataset helpers for RDF/DCAT serialization and parsing
 import calendar
 import json
 import logging
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime
 from fractions import Fraction
 from itertools import chain
@@ -22,7 +22,12 @@ from udata import i18n, uris
 from udata.core.access_type.constants import AccessType, InspireLimitationCategory
 from udata.core.constants import HVD
 from udata.core.dataset.models import HarvestResourceMetadata
-from udata.core.harvest import Harvestable, PendingRelation, RelationResolver
+from udata.core.harvest import (
+    Harvestable,
+    PendingRelation,
+    ReferenceValue,
+    Relation,
+)
 from udata.core.spatial.models import SpatialCoverage
 from udata.harvest.exceptions import HarvestSkipException
 from udata.mongo.datetime_fields import DateRange
@@ -73,24 +78,23 @@ from .models import Checksum, Dataset, License, Resource
 log = logging.getLogger(__name__)
 
 
-# A `dcat:inSeries` (and other cross-references) can take two distinct forms, both handled by
-# `DatasetRelation.resolve`:
+# A `dcat:inSeries` (and other cross-references) reference can take two distinct forms, both
+# handled by the base `Relation.resolve` (see `udata.core.harvest`):
 #
 # 1. A *resource reference* (standard, e.g. GeoNetwork): the predicate object is the parent
 #    resource itself, referenced by its `dct:identifier` or resource URI. Resolved against the
 #    harvested parent's `remote_id` / `harvest.uri`.
 # 2. A *record reference* (SEMIC/ISO-19139): the predicate object is a synthetic URN encoding a
 #    parent *record* UUID (`urn:iso19139:<type>:<record-uuid>`), not a resource URI. Resolved
-#    through the run-scoped record UUID -> item mapping in `RelationResolver._record_uuids`.
-ISO19139_URN_PREFIX = "urn:iso19139:"
+#    against the run-scoped record UUID -> item mapping in `RelationResolver._record_registry`.
 
 
-class DatasetRelation(PendingRelation[Dataset]):
+class DatasetRelation(Relation[Dataset]):
     """A cross-reference whose target is a harvested `Dataset` (e.g. `dcat:inSeries`)."""
 
     @classmethod
-    def from_rdf(cls, node: RdfResource) -> tuple[list[str], list[str]]:
-        """Collect the reference targets of `cls.predicate` on an rdflib `Resource`.
+    def identifiers_from_rdf(cls, node: RdfResource) -> list[ReferenceValue]:
+        """Collect the reference values of `cls.predicate` on an rdflib `Resource`.
 
         Lenient parsing: the object of `cls.predicate` is normally a `rdf:resource` URI
         (referenced by its `dct:identifier` when present, otherwise by the URI itself). Because
@@ -98,85 +102,33 @@ class DatasetRelation(PendingRelation[Dataset]):
         blank nodes (via their `dct:identifier`). Blank nodes without an identifier are ignored
         with a warning.
 
-        Returns a `(identifiers, uris)` tuple; if any plain URI references are collected,
-        identifiers are ignored.
+        `endswith_allowed` is True iff a `dct:identifier` was present on the referenced object,
+        regardless of its RDF type (preserving `main`: the endswith fallback triggers whenever
+        the identifier is not None, literal or URI). A plain resource URI (no `dct:identifier`)
+        is exact-match only.
         """
-        identifiers: list[str] = []
-        uris: list[str] = []
-
+        values: list[ReferenceValue] = []
         for obj in node.objects(cls.predicate):
             # Lenient: treat literal values as identifiers.
             if isinstance(obj, Literal):
-                identifiers.append(str(obj))
+                values.append(ReferenceValue(str(obj), endswith_allowed=True))
                 continue
             # ``obj`` is an ``rdflib.resource.Resource`` (a URIRef or a blank node).
             dct_id = obj.value(DCT.identifier)
             if dct_id is not None:
-                identifiers.append(str(dct_id))
+                # rdflib may wrap a URI-valued identifier in a `Resource`; unwrap it so we keep
+                # the bare identifier string (not its `Resource(...)` repr).
+                if isinstance(dct_id, RdfResource):
+                    dct_id = dct_id.identifier
+                values.append(ReferenceValue(str(dct_id), endswith_allowed=True))
                 continue
             if isinstance(obj.identifier, BNode):
                 # Inline blank node without an identifier – no usable reference.
                 log.warning("Ignoring inline %s reference – no dct:identifier", cls.predicate)
                 continue
-            # Plain `rdf:resource` URI.
-            uris.append(str(obj.identifier))
-
-        # FIXME[series]: reconsider uris/identifiers split
-        # If any plain URI references were collected, identifiers should be ignored.
-        if uris:
-            identifiers = []
-
-        return identifiers, uris
-
-    @classmethod
-    def lookup_keys(cls, item: Harvestable) -> Iterator[str]:
-        log.info(f"REFS: lookup_keys: {item=}, {item.harvest=}")
-        if not isinstance(item, Dataset) or item.harvest is None:
-            return
-        if item.harvest.remote_id:
-            yield item.harvest.remote_id
-        if item.harvest.uri:
-            yield item.harvest.uri
-
-    def resolve(self, registry: Mapping[str, Harvestable]) -> Sequence[Dataset]:
-        targets = []
-
-        # Form 1 — resource reference (standard, e.g. GeoNetwork): the predicate object is the
-        # parent resource itself, referenced by its `dct:identifier` or by its resource URI. Both
-        # are indexed from the harvested parent's `remote_id` and `harvest.uri` (see `lookup_keys`).
-        for identifier in self.identifiers:
-            target = registry.get(identifier)
-            if target is None:
-                # Europe XSLT sometimes prefixes identifiers with the catalog domain.
-                target = next(
-                    (
-                        v
-                        for k, v in registry.items()
-                        if isinstance(k, str) and k.endswith(identifier)
-                    ),
-                    None,
-                )
-            if target is not None and target not in targets:
-                targets.append(target)
-        for uri in self.uris:
-            target = registry.get(uri)
-            if target is not None and target not in targets:
-                targets.append(target)
-
-        # Form 2 — record reference (SEMIC/ISO-19139): the URI is a synthetic URN encoding the
-        # parent *record* UUID (`urn:iso19139:<type>:<record-uuid>`), not a resource URI. There is
-        # no matching `remote_id`/`harvest.uri`, so resolve through the run-scoped record UUID
-        # mapping (`RelationResolver._record_uuids`) instead.
-        for uri in self.uris:
-            if not uri.startswith(ISO19139_URN_PREFIX):
-                continue
-            record_uuid = uri.rsplit(":", 1)[-1]
-            target = registry.get(record_uuid)
-            if target is not None and target not in targets:
-                targets.append(target)
-
-        log.info(f"REFS: resolve: {targets=}")
-        return targets
+            # Plain `rdf:resource` URI – exact match only.
+            values.append(ReferenceValue(str(obj.identifier), endswith_allowed=False))
+        return values
 
 
 class InSeriesRelation(DatasetRelation):
@@ -184,13 +136,14 @@ class InSeriesRelation(DatasetRelation):
 
     predicate = DCAT.inSeries
 
-    def apply(self, targets: Sequence[Dataset]) -> None:
+    @classmethod
+    def apply(cls, owner: Harvestable, targets: Sequence[Dataset]) -> None:
         if not targets:
             return
         parent = targets[0]
 
         log.info(f"REFS: apply: extras.dcat.in_series = {str(parent.id)}")
-        set_dcat_extra(self.owner, "in_series", str(parent.id))
+        set_dcat_extra(owner, "in_series", str(parent.id))
 
 
 FREQ_TERM_TO_UDATA = {
@@ -1064,16 +1017,13 @@ def dataset_from_rdf(
     node: Node | None = None,
     remote_url_prefix: str | None = None,
     dryrun: bool = False,
-    *,
-    resolver: RelationResolver | None = None,
-):
+) -> tuple[Dataset, list[PendingRelation]]:
     """
     Create or update a dataset from a RDF/DCAT graph.
 
-    Pending references (`dcat:inSeries`) are only collected when a `RelationResolver`
-    (a harvest run context) is passed: collection and resolution are run-scoped concerns
-    owned by the caller that wants cross-reference resolution. Standalone parsing (e.g.
-    `commands/dcat.py`, tests) passes no resolver and records nothing.
+    Declared references (`dcat:inSeries`) are returned as pure `PendingRelation` values; the
+    caller decides whether to feed them to a `RelationResolver` (a harvest run context) or to
+    discard them (standalone parsing, tests).
     """
     dataset = dataset or Dataset()
 
@@ -1206,10 +1156,11 @@ def dataset_from_rdf(
         modified_at, "DCT.modified (dataset)", refuse_future=True
     )
 
-    if resolver is not None:
-        resolver.add_pending_relation(dataset, InSeriesRelation, d)
+    relations: list[PendingRelation] = []
+    if (relation := InSeriesRelation.from_rdf(d)) is not None:
+        relations.append(relation)
 
-    return dataset
+    return dataset, relations
 
 
 def bbox_to_geojson_multipolygon(bbox_as_str: str) -> dict | None:

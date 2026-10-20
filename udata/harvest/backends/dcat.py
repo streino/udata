@@ -235,25 +235,23 @@ class DcatBackend(BaseBackend):
     ) -> H:
         """Get-or-create an item by remote ID, parse it from RDF, and register it with the resolver.
 
-        # FIXME[series]: align the *_from_rdf signatures (param naming / optionality).
-        `dataset_from_rdf` and `dataservice_from_rdf` share this shape but differ in param
-        names/defaulting (see each definition); normalized here via `Callable`.
+        `from_rdf` (`dataset_from_rdf`/`dataservice_from_rdf`) returns declared references as
+        pure values; parser naming is normalized here via `Callable`.
         """
         harvest_item.kwargs["page_number"] = page_number
         remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
 
         item = self.get_item(harvest_item.remote_id, model)
 
-        item = from_rdf(
+        item, relations = from_rdf(
             graph,
             item,
             node,
             remote_url_prefix=remote_url_prefix,
             dryrun=self.dryrun,
-            resolver=self.relations,
         )
 
-        self.relations.register(item)
+        self.relations.register(item, relations)
 
         return item
 

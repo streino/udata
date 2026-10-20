@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
@@ -17,6 +17,12 @@ from udata.core.owned import Owned
 from udata.mongo.url_field import URLField
 
 log = logging.getLogger(__name__)
+
+
+# Prefix of the synthetic record-reference URNs produced by the ISO-19139/SEMIC conversion
+# (`urn:iso19139:<type>:<record-uuid>`). Such values resolve against the run-scoped record
+# registry, never the resource registry.
+ISO19139_URN_PREFIX = "urn:iso19139:"
 
 
 class HarvestMetadata(EmbeddedDocument):
@@ -69,63 +75,98 @@ class Harvestable(Owned):
 H = TypeVar("H", bound=Harvestable)
 
 
-# FIXME[series]: improve comments
 @dataclass(frozen=True)
-class PendingRelation(ABC, Generic[H]):
-    """A cross-reference between harvested items awaiting resolution; the subclass is its own kind.
+class ReferenceValue:
+    """A single reference target extracted from RDF, not yet matched to an item.
 
-    `owner` is the harvested item this relation was collected on; it is provided by
-    `RelationResolver.add_pending_relation()`, which constructs the relation already attached to
-    its owner.
-
-    The class is generic over the type of the *target* items that `resolve()` returns (e.g.
-    `Dataset` for `dcat:inSeries`), so subclasses can specialize `resolve`/`apply` precisely.
+    `endswith_allowed` mirrors the legacy (pre-refactor) parser behavior: only values that the
+    parser treated as a *`dct:identifier`* (literals and inline-identifier values, whatever the
+    identifier's RDF type) are candidates for the `endswith` fallback scan. Plain resource URIs
+    are matched exactly only.
     """
 
-    # `dct:identifier` values collected from the predicate objects, matched against the
-    # target's harvested `remote_id`.
-    identifiers: list[str]
+    value: str
+    endswith_allowed: bool
 
-    # `rdf:resource` object URIs collected from the predicate objects, matched against the
-    # target's harvested `harvest.uri`.
-    uris: list[str]
 
-    owner: Harvestable
+@dataclass(frozen=True)
+class PendingRelation(Generic[H]):
+    """A pure value describing a cross-reference awaiting resolution.
 
+    Produced by `Relation.from_rdf`, consumed by `RelationResolver`. It carries the strategy
+    class (`relation_cls`) and the collected `ReferenceValue`s; the owning item is supplied by
+    the resolver at registration time.
+    """
+
+    relation_cls: type[Relation[H]]
+    identifiers: list[ReferenceValue]
+
+
+class Relation(ABC, Generic[H]):
+    """Base strategy for a DCAT cross-reference (e.g. `dcat:inSeries`, `dcat:servesDataset`).
+
+    Parsing (`identifiers_from_rdf`/`from_rdf`) and resolution (`resolve`) are pure, stateless
+    classmethods; only `apply` mutates the owning harvested item. Subclasses declare the
+    predicate and the apply behavior; everything else is shared.
+    """
+
+    # The predicate whose objects are the referenced targets (an rdflib term).
     predicate: ClassVar[Node]
 
     @classmethod
     @abstractmethod
-    def from_rdf(cls, node: RdfResource) -> tuple[list[str], list[str]]:
-        """Collect the `(identifiers, uris)` for the relation from the objects of `cls.predicate`
-        on an rdflib `Resource`."""
+    def identifiers_from_rdf(cls, node: RdfResource) -> list[ReferenceValue]:
+        """Collect the `ReferenceValue`s for `cls.predicate` on an rdflib `Resource`."""
         raise NotImplementedError
 
-    # FIXME[series]: rename to registry_keys, identifiers/ids, ...?
+    @classmethod
+    def from_rdf(cls, node: RdfResource) -> PendingRelation[H] | None:
+        """Value builder: wrap `identifiers_from_rdf(node)` in a `PendingRelation`, or `None` if
+        no usable reference was collected."""
+        refs = cls.identifiers_from_rdf(node)
+        if not refs:
+            return None
+        return PendingRelation(cls, refs)
+
+    @classmethod
+    def resolve(
+        cls,
+        identifiers: Sequence[ReferenceValue],
+        resource_registry: Mapping[str, Harvestable],
+        remote_ids: Mapping[str, Harvestable],
+        record_registry: Mapping[str, Harvestable],
+    ) -> list[Harvestable]:
+        """Resolve the collected `ReferenceValue`s to target items.
+
+        `resource_registry` merges `remote_id` + `harvest.uri` keys for exact matches;
+        `remote_ids` holds `remote_id` keys only and is the surface the `endswith` fallback
+        scans (mirroring `main`: `item.harvest.remote_id.endswith(id)`); `record_registry` maps
+        run-scoped record UUIDs for `urn:iso19139:*` record references.
+        """
+        targets: list[Harvestable] = []
+        for ref in identifiers:
+            if ref.value.startswith(ISO19139_URN_PREFIX):
+                # Record reference (SEMIC/ISO-19139): the value is a synthetic URN encoding a
+                # parent *record* UUID, resolved only against the record registry.
+                record_uuid = ref.value.rsplit(":", 1)[-1]
+                target = record_registry.get(record_uuid)
+            else:
+                # Resource reference: exact match over `remote_id` + `harvest.uri`, then the
+                # `remote_id`-only `endswith` fallback (Europe XSLT sometimes prefixes IDs with
+                # the catalog domain).
+                target = resource_registry.get(ref.value)
+                if target is None and ref.endswith_allowed:
+                    # FIXME[series]: revisit the exact endswith surface with the Europe XSLT.
+                    target = next((v for k, v in remote_ids.items() if k.endswith(ref.value)), None)
+            if target is not None and target not in targets:
+                targets.append(target)
+        return targets
+
     @classmethod
     @abstractmethod
-    def lookup_keys(cls, item: Harvestable) -> Iterator[str]:
-        """Yield the keys under which `item` should be findable in the registry."""
+    def apply(cls, owner: Harvestable, targets: Sequence[H]) -> None:
+        """Apply the resolved `targets` to `owner`."""
         raise NotImplementedError
-
-    @abstractmethod
-    def resolve(self, registry: Mapping[str, Harvestable]) -> Sequence[H]:
-        """Return the target items for this collected relation."""
-        raise NotImplementedError
-
-    # FIXME[series]: rename to update?
-    @abstractmethod
-    def apply(self, targets: Sequence[H]) -> None:
-        """Apply the resolved `targets` to `self.owner`."""
-        raise NotImplementedError
-
-    # FIXME[series]: standard python object repr
-    # FIXME[series]: self.owner.id always ok
-    def __repr__(self):
-        return (
-            f"PendingRelation(owner={type(self.owner).__name__}({getattr(self.owner, 'id', None)}), "
-            f"identifiers={self.identifiers}, uris={self.uris})"
-        )
 
 
 class RelationResolver:
@@ -133,73 +174,88 @@ class RelationResolver:
     Collect the harvested items and the pending relations they carry as they are processed,
     then resolve every pending relation once the whole run has been walked.
 
-    Pending-reference collection and resolution are run-scoped concerns. `*_from_rdf` only
-    records pending relations through `add_pending_relation` when this resolver (a harvest run
-    context) is passed to it (see `dataset_from_rdf`/`dataservice_from_rdf`), so standalone
-    parsing records nothing. The run owner (e.g. the DCAT backend) is responsible for calling
-    `resolve()` at the end of the run.
+    `*_from_rdf` return declared references as pure `PendingRelation` values; the caller (e.g.
+    the DCAT backend's `item_processor`) feeds them to `register()` together with the item.
+    Standalone parsing feeds nothing, so nothing is collected. The run owner is responsible for
+    calling `resolve()` at the end of the run.
 
     Pending relations are grouped by their owner. `resolve()` iterates the owners, applies every
     resolved relation of an owner, then persists that owner once (unless `dryrun`): minimal delay
-    between resolution and save, and a resolution failure only impacts a single owner. The lookup
-    registry only depends on the relation type, so it is built once per type and reused across
-    owners.
+    between resolution and save, and a resolution failure only impacts a single owner.
+
+    The registries are class-independent, but they are **not** captured in `register()`: the
+    backend only finishes filling an item's `harvest.remote_id` *after* `register()` has returned
+    (via `update_harvest_metadata` in the item processor). They are therefore rebuilt from
+    `self._items` at resolve time, once the whole run has been walked, mirroring the legacy
+    lazily-built registries.
     """
 
     def __init__(self, dryrun: bool = False):
         self.dryrun = dryrun
         self._items: list[Harvestable] = []
         self._pending: dict[Harvestable, list[PendingRelation]] = defaultdict(list)
-        # Run-scoped mapping from a record UUID (`isPrimaryTopicOf`/`dct:identifier`) to the
-        # item that carries it. Items expose it through a transient `_remote_record_id`
-        # attribute that is never persisted, so this mapping only lives for one harvest run.
-        self._record_uuids: dict[str, Harvestable] = {}
 
-    def register(self, item: Harvestable) -> None:
+    @staticmethod
+    def _build_registries(
+        items: Sequence[Harvestable],
+    ) -> tuple[dict[str, Harvestable], dict[str, Harvestable], dict[str, Harvestable]]:
+        """Rebuild the three lookup registries from the run's collected `items`.
+
+        Returns `(resource_registry, remote_ids, record_registry)`:
+        - `resource_registry`: exact-match lookup over each item's `harvest.remote_id` +
+          `harvest.uri`. Because `remote_id` often falls back to the node URI, the two spaces are
+          merged here: a well-formed value matches whichever field it denotes.
+        - `remote_ids`: `harvest.remote_id` only — the surface the `endswith` fallback scans
+          (main parity). Deliberately excludes URI keys.
+        - `record_registry`: run-scoped mapping from a record UUID (`isPrimaryTopicOf`/
+          `dct:identifier`) to the item that carries it, exposed through a transient
+          `_remote_record_id` attribute that is never persisted. Kept separate from the resource
+          registry because record UUIDs can legitimately collide with resource `remote_id` UUIDs.
+        """
+        resource_registry: dict[str, Harvestable] = {}
+        remote_ids: dict[str, Harvestable] = {}
+        record_registry: dict[str, Harvestable] = {}
+        for item in items:
+            harvest = getattr(item, "harvest", None)
+            if harvest is not None:
+                if harvest.remote_id:
+                    resource_registry[harvest.remote_id] = item
+                    remote_ids[harvest.remote_id] = item
+                if harvest.uri:
+                    resource_registry[harvest.uri] = item
+            if record_uuid := getattr(item, "_remote_record_id", None):
+                record_registry[record_uuid] = item
+        return resource_registry, remote_ids, record_registry
+
+    def register(
+        self, item: Harvestable, relations: Sequence[PendingRelation] | None = None
+    ) -> None:
         log.info(f"REFS: register: item={type(item).__name__}({getattr(item, 'id', None)})")
         self._items.append(item)
-        # FIXME[series]: getattr
-        if record_uuid := getattr(item, "_remote_record_id", None):
-            self._record_uuids[record_uuid] = item
-
-    def add_pending_relation(
-        self, owner: Harvestable, relation_cls: type[PendingRelation], node: RdfResource
-    ) -> None:
-        identifiers, uris = relation_cls.from_rdf(node)
-        if not identifiers and not uris:
-            return
-        relation = relation_cls(identifiers=identifiers, uris=uris, owner=owner)
-        log.info(f"REFS: add_pending_relation: relation={type(relation).__name__}, {relation=}")
-        self._pending[owner].append(relation)
+        for relation in relations or []:
+            self._pending[item].append(relation)
 
     def resolve(self) -> None:
         log.info("REFS: resolving...")
-        # The registry only depends on the relation type, not on the owner, so it is built once
-        # per type and reused across owners.
-        registries: dict[type[PendingRelation], dict[str, Harvestable]] = {}
+        if not self._pending:
+            return
+        resource_registry, remote_ids, record_registry = self._build_registries(self._items)
         for owner, relations in self._pending.items():
             mutated = False
             for relation in relations:
-                ref_cls = type(relation)
-                if ref_cls not in registries:
-                    registry = self._build_registry(ref_cls)
-                    registry.update(self._record_uuids)
-                    registries[ref_cls] = registry
-                targets = relation.resolve(registries[ref_cls])
+                targets = relation.relation_cls.resolve(
+                    relation.identifiers,
+                    resource_registry,
+                    remote_ids,
+                    record_registry,
+                )
                 if targets:
                     log.info(
-                        f"REFS: resolve: kind={ref_cls.__name__}, "
+                        f"REFS: resolve: kind={relation.relation_cls.__name__}, "
                         f"owner={type(owner).__name__}({getattr(owner, 'id', None)}), "
                         f"{targets=}"
                     )
-                    relation.apply(targets)
+                    relation.relation_cls.apply(owner, targets)
                     mutated = True
             if mutated and not self.dryrun:
                 owner.save()
-
-    def _build_registry(self, ref_cls: type[PendingRelation]) -> dict[str, Harvestable]:
-        registry = {}
-        for item in self._items:
-            for key in ref_cls.lookup_keys(item):
-                registry[key] = item
-        return registry

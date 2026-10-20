@@ -8,7 +8,7 @@ from udata.core.constants import HVD
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.models import Dataset, License
 from udata.core.dataset.rdf import DatasetRelation, dataset_to_graph_id, sanitize_html
-from udata.core.harvest import RelationResolver
+from udata.core.harvest import Harvestable, PendingRelation
 from udata.rdf import (
     CONTACT_POINT_ENTITY_TO_ROLE,
     DCAT,
@@ -35,11 +35,12 @@ class ServesDatasetRelation(DatasetRelation):
 
     predicate = DCAT.servesDataset
 
-    def apply(self, targets: Sequence[Dataset]) -> None:
+    @classmethod
+    def apply(cls, owner: Harvestable, targets: Sequence[Dataset]) -> None:
         for dataset in targets:
-            if dataset not in self.owner.datasets:
+            if dataset not in owner.datasets:
                 log.info(f"REFS: apply: datasets += Dataset({dataset.id})")
-                self.owner.datasets.append(dataset)
+                owner.datasets.append(dataset)
 
 
 def dataservice_from_rdf(
@@ -48,16 +49,13 @@ def dataservice_from_rdf(
     node: Node | None,
     remote_url_prefix: str | None = None,
     dryrun: bool = False,
-    *,
-    resolver: RelationResolver | None = None,
-) -> Dataservice:
+) -> tuple[Dataservice, list[PendingRelation]]:
     """
     Create or update a dataservice from a RDF/DCAT graph.
 
-    Pending references (`dcat:servesDataset`) are only collected when a `RelationResolver`
-    (a harvest run context) is passed: collection and resolution are run-scoped concerns
-    owned by the caller that wants cross-reference resolution. Standalone parsing records
-    nothing.
+    Declared references (`dcat:servesDataset`) are returned as pure `PendingRelation` values;
+    the caller decides whether to feed them to a `RelationResolver` (a harvest run context) or
+    to discard them (standalone parsing, tests).
     """
     if node is None:  # Assume first match is the only match
         node = graph.value(predicate=RDF.type, object=DCAT.DataService)
@@ -102,10 +100,11 @@ def dataservice_from_rdf(
 
     dataservice.tags = themes_from_rdf(d)
 
-    if resolver is not None:
-        resolver.add_pending_relation(dataservice, ServesDatasetRelation, d)
+    relations: list[PendingRelation] = []
+    if (relation := ServesDatasetRelation.from_rdf(d)) is not None:
+        relations.append(relation)
 
-    return dataservice
+    return dataservice, relations
 
 
 def dataservice_to_rdf(dataservice: Dataservice, graph=None):

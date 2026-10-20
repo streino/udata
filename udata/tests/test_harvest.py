@@ -1,11 +1,11 @@
 """Unit tests for the harvest reference resolution machinery.
 
-These tests exercise `udata.core.harvest`: the `PendingRelation` base and the
-`RelationResolver`. A lightweight `FakeRelation` subclass drives the generic resolver
-orchestration (collect -> register -> build registry -> resolve -> apply) without coupling to a
-concrete relation. Real `Dataset` instances (via `build_dataset`) are used as the harvested
-items so that the real `RelationResolver.add_pending_relation` is exercised. Two end-to-end
-tests also drive the resolver with the real `InSeriesRelation` to cover run-scoped record-UUID
+These tests exercise `udata.core.harvest`: the `Relation` strategy base, the `PendingRelation`
+value produced by `from_rdf`, and the `RelationResolver`. A lightweight `FakeRelation` subclass
+drives the generic resolver orchestration (parse -> register -> resolve -> apply) without
+coupling to a concrete relation. Real `Dataset` instances (via `build_dataset`) are used as the
+harvested items so that the real `RelationResolver.register` is exercised. Two end-to-end tests
+also drive the resolver with the real `InSeriesRelation` to cover run-scoped record-UUID
 resolution. No database is required.
 """
 
@@ -15,7 +15,7 @@ from rdflib import Graph, Namespace, URIRef
 
 from udata.core.dataset.models import Dataset
 from udata.core.dataset.rdf import InSeriesRelation
-from udata.core.harvest import PendingRelation, RelationResolver
+from udata.core.harvest import ReferenceValue, Relation, RelationResolver
 
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
 
@@ -32,37 +32,35 @@ def build_dataset(remote_id=None, uri=None, record_uuid=None) -> Dataset:
     return dataset
 
 
-class FakeRelation(PendingRelation):
-    """A minimal `PendingRelation` used to drive the generic resolver orchestration."""
+def service_node():
+    return Graph().resource(URIRef("http://ex/service"))
+
+
+class FakeRelation(Relation[Dataset]):
+    """A minimal `Relation` strategy used to drive the generic resolver orchestration."""
 
     predicate = URIRef("http://ex/fake")
-    # Default reference targets. A subclass can override `refs` to vary what `from_rdf` collects.
+    # Default reference values. A subclass can override `refs` to vary what `from_rdf` collects.
     refs: tuple[str, ...] = ("d1", "d2")
 
     @classmethod
-    def from_rdf(cls, node):
-        # Test-only: returns a fixed reference without reading the RDF node.
-        return list(cls.refs), []
+    def identifiers_from_rdf(cls, node):
+        # Test-only: returns fixed references without reading the RDF node.
+        return [ReferenceValue(r, endswith_allowed=True) for r in cls.refs]
 
     @classmethod
-    def lookup_keys(cls, item):
-        yield item.harvest.remote_id
-
-    def resolve(self, registry):
-        return [registry[k] for k in self.identifiers if k in registry]
-
-    def apply(self, targets):
-        cast(Dataset, self.owner).extras["fake"] = [t.harvest.remote_id for t in targets]
+    def apply(cls, owner, targets):
+        cast(Dataset, owner).extras["fake"] = [t.harvest.remote_id for t in targets]
 
 
 class FakeEmptyRelation(FakeRelation):
-    """A `PendingRelation` whose reference collection is empty (no usable reference)."""
+    """A `Relation` whose reference collection is empty (no usable reference)."""
 
     refs = ()
 
 
 class FakeUnresolvedRelation(FakeRelation):
-    """A `PendingRelation` whose references never match any registered item."""
+    """A `Relation` whose references never match any registered item."""
 
     refs = ("missing1", "missing2")
 
@@ -71,9 +69,8 @@ class RelationResolverTest:
     def test_accumulates_multiple_pending_relations(self):
         resolver = RelationResolver(dryrun=True)
         source = build_dataset(remote_id="service")
-        node = Graph().resource(URIRef("http://ex/service"))
-        resolver.add_pending_relation(source, FakeRelation, node)
-        resolver.add_pending_relation(source, FakeRelation, node)
+        node = service_node()
+        resolver.register(source, [FakeRelation.from_rdf(node), FakeRelation.from_rdf(node)])
 
         assert len(resolver._pending[source]) == 2
 
@@ -81,10 +78,10 @@ class RelationResolverTest:
         resolver = RelationResolver(dryrun=True)
         source1 = build_dataset(remote_id="service1")
         source2 = build_dataset(remote_id="service2")
-        node = Graph().resource(URIRef("http://ex/service"))
+        node = service_node()
 
-        resolver.add_pending_relation(source1, FakeRelation, node)
-        resolver.add_pending_relation(source2, FakeRelation, node)
+        resolver.register(source1, [FakeRelation.from_rdf(node)])
+        resolver.register(source2, [FakeRelation.from_rdf(node)])
 
         assert len(resolver._pending) == 2
         assert resolver._pending[source1] is not resolver._pending[source2]
@@ -95,9 +92,8 @@ class RelationResolverTest:
         save = mocker.patch.object(source, "save")
         target1 = build_dataset(remote_id="d1")
         target2 = build_dataset(remote_id="d2")
-        node = Graph().resource(URIRef("http://ex/service"))
-        resolver.add_pending_relation(source, FakeRelation, node)
-        resolver.add_pending_relation(source, FakeRelation, node)
+        node = service_node()
+        resolver.register(source, [FakeRelation.from_rdf(node), FakeRelation.from_rdf(node)])
 
         for item in (target1, target2, source):
             resolver.register(item)
@@ -111,8 +107,8 @@ class RelationResolverTest:
         source = build_dataset(remote_id="service")
         save = mocker.patch.object(source, "save")
         target = build_dataset(remote_id="d1")
-        node = Graph().resource(URIRef("http://ex/service"))
-        resolver.add_pending_relation(source, FakeRelation, node)
+        node = service_node()
+        resolver.register(source, [FakeRelation.from_rdf(node)])
 
         for item in (target, source):
             resolver.register(item)
@@ -125,8 +121,8 @@ class RelationResolverTest:
         resolver = RelationResolver(dryrun=False)
         source = build_dataset(remote_id="service")
         save = mocker.patch.object(source, "save")
-        node = Graph().resource(URIRef("http://ex/service"))
-        resolver.add_pending_relation(source, FakeRelation, node)
+        node = service_node()
+        resolver.register(source, [FakeRelation.from_rdf(node)])
 
         resolver.register(source)
         resolver.resolve()
@@ -134,23 +130,27 @@ class RelationResolverTest:
         assert "fake" not in source.extras
         save.assert_not_called()
 
-    def test_add_pending_relation_ignores_empty_reference(self):
+    def test_from_rdf_empty_reference_is_not_collected(self):
+        """An empty reference collection yields `None` from `from_rdf` and nothing to resolve."""
         resolver = RelationResolver(dryrun=True)
         source = build_dataset(remote_id="service")
-        node = Graph().resource(URIRef("http://ex/service"))
+        node = service_node()
 
-        resolver.add_pending_relation(source, FakeEmptyRelation, node)
+        relation = FakeEmptyRelation.from_rdf(node)
+        assert relation is None
+        resolver.register(source)
 
         assert resolver._pending == {}
 
-    def test_pending_relation_carries_its_owner(self):
+    def test_pending_relation_groups_under_owner_on_register(self):
         resolver = RelationResolver(dryrun=True)
         source = build_dataset(remote_id="service")
-        node = Graph().resource(URIRef("http://ex/service"))
+        node = service_node()
+        relation = FakeRelation.from_rdf(node)
 
-        resolver.add_pending_relation(source, FakeRelation, node)
+        resolver.register(source, [relation])
 
-        assert resolver._pending[source][0].owner is source
+        assert resolver._pending[source][0] is relation
 
     def test_resolve_saves_only_owners_with_resolved_targets(self, mocker):
         resolver = RelationResolver(dryrun=False)
@@ -159,10 +159,10 @@ class RelationResolverTest:
         save_resolved = mocker.patch.object(resolved, "save")
         save_unresolved = mocker.patch.object(unresolved, "save")
         target = build_dataset(remote_id="d1")
-        node = Graph().resource(URIRef("http://ex/service"))
+        node = service_node()
 
-        resolver.add_pending_relation(resolved, FakeRelation, node)
-        resolver.add_pending_relation(unresolved, FakeUnresolvedRelation, node)
+        resolver.register(resolved, [FakeRelation.from_rdf(node)])
+        resolver.register(unresolved, [FakeUnresolvedRelation.from_rdf(node)])
 
         for item in (target, resolved, unresolved):
             resolver.register(item)
@@ -184,8 +184,8 @@ class RelationResolverTest:
         graph.add((URIRef("http://ex/child"), DCAT.inSeries, URIRef("http://ex/parents/2")))
 
         resolver = RelationResolver(dryrun=True)
-        resolver.add_pending_relation(
-            child, InSeriesRelation, graph.resource(URIRef("http://ex/child"))
+        resolver.register(
+            child, [InSeriesRelation.from_rdf(graph.resource(URIRef("http://ex/child")))]
         )
         for item in (parent1, parent2, child):
             resolver.register(item)
@@ -198,9 +198,7 @@ class RelationResolverTest:
         source = build_dataset(remote_id="service")
         target1 = build_dataset(remote_id="d1")
         target2 = build_dataset(remote_id="d2")
-        resolver.add_pending_relation(
-            source, FakeRelation, Graph().resource(URIRef("http://ex/service"))
-        )
+        resolver.register(source, [FakeRelation.from_rdf(service_node())])
 
         for item in (target1, target2, source):
             resolver.register(item)
@@ -221,9 +219,7 @@ class RelationResolverTest:
         resolver = RelationResolver(dryrun=True)
         source = build_dataset(remote_id="service")
         target1 = build_dataset(remote_id="d1")
-        resolver.add_pending_relation(
-            source, FakeRelation, Graph().resource(URIRef("http://ex/service"))
-        )
+        resolver.register(source, [FakeRelation.from_rdf(service_node())])
 
         resolver.register(target1)
         resolver.register(source)
@@ -240,14 +236,15 @@ class RelationResolverTest:
         graph.add((URIRef("http://ex/child"), DCAT.inSeries, URIRef("urn:iso19139:parent:12345")))
 
         resolver = RelationResolver(dryrun=True)
-        resolver.add_pending_relation(
-            child, InSeriesRelation, graph.resource(URIRef("http://ex/child"))
+        resolver.register(
+            child, [InSeriesRelation.from_rdf(graph.resource(URIRef("http://ex/child")))]
         )
         resolver.register(parent)
         resolver.register(child)
         resolver.resolve()
 
-        assert resolver._record_uuids == {"12345": parent}
+        resource_registry, _, record_registry = resolver._build_registries(resolver._items)
+        assert record_registry == {"12345": parent}
         assert child.extras["dcat"]["in_series"] == str(parent.id)
 
     def test_resolve_standard_resource_reference_end_to_end(self):
@@ -262,8 +259,8 @@ class RelationResolverTest:
         )
 
         resolver = RelationResolver(dryrun=True)
-        resolver.add_pending_relation(
-            child, InSeriesRelation, graph.resource(URIRef("http://ex/child"))
+        resolver.register(
+            child, [InSeriesRelation.from_rdf(graph.resource(URIRef("http://ex/child")))]
         )
         resolver.register(parent)
         resolver.register(child)
