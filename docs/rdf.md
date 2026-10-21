@@ -123,8 +123,6 @@ udata can harvest other RDF/DCAT enabled data portals with the [DCAT Harvester](
 
 ## References
 
-FIXME[series]: review doc
-
 The udata rdf implementation and its harvester were created using these references:
 
 - [Official DCAT Vocabulary documentation][dcat]
@@ -135,27 +133,54 @@ The udata rdf implementation and its harvester were created using these referenc
 
 ### Reference handling
 
-When converting RDF to internal models the parser uses `InSeriesRelation.from_rdf` (a subclass
-of `PendingRelation` in `udata.core.harvest`). The helper extracts **only**
-`rdf:resource` URIs; inline resources that provide a `dct:identifier` or are blank‑nodes are ignored (a warning is emitted).
+When converting RDF to internal models, the `*_from_rdf` parsers (`dataset_from_rdf`,
+`dataservice_from_rdf`) create or update the target model and return it together with any
+declared cross‑references as pure `PendingRelation` values. Each `PendingRelation` carries the
+reference's kind (`relation_cls`) and the collected target values (`identifiers`), stored as
+`ReferenceValue`s. Parsing itself is pure: nothing is stored or applied — the caller decides
+whether to feed these to a `RelationResolver`.
 
-The returned `PendingRelation` object contains two lists:
-- `identifiers` – never populated for DCAT harvests (inline definitions are ignored).
-- `uris` – the absolute URIs that will be used by the `RelationResolver` (also in `udata.core.harvest`).
+Reference targets are collected leniently by `DatasetRelation.identifiers_from_rdf`:
+- a literal value → treated as an identifier;
+- a `rdf:resource` URI → referenced by its `dct:identifier` when one is present, otherwise by
+  the URI itself;
+- an inline blank node → by its `dct:identifier`; a blank node without one is ignored with a
+  warning.
 
-Typical usage inside a parser:
+Each `ReferenceValue` records `endswith_allowed` — true whenever a `dct:identifier` was present
+(whatever its RDF type), making the value a candidate for the `endswith` fallback; a plain
+resource URI is matched exactly only.
+
+Resolution is two‑phase:
+1. **Parsing** — `*_from_rdf` builds the model and returns a `(model, relations)` pair; no
+   `save()` happens here.
+2. **Resolution** — the run owner (currently the DCAT backend) calls
+   `self.relations.register(item, relations)` for every processed item, then calls
+   `resolve()` once the whole run has been walked. The resolver rebuilds lookup registries from
+   all registered items (by `remote_id`, by `harvest.uri`, and the run‑scoped record UUIDs),
+   resolves each owner's relations, applies them to the owner, and saves the owner once.
+
+Inside a parser, this looks like:
 
 ```python
-if resolver is not None:
-    resolver.add_pending_relation(dataset, InSeriesRelation, resource)
+def dataset_from_rdf(graph, dataset=None, node=None, *, remote_url_prefix=None, dryrun=False):
+    d = graph.resource(node)
+    # ... populate `dataset` from the RDF node ...
+    relations: list[PendingRelation] = []
+    if (relation := InSeriesRelation.from_rdf(d)) is not None:
+        relations.append(relation)
+    return dataset, relations
 ```
 
-The `*_from_rdf` parsers receive the run's `RelationResolver` and record pending relations only
-when one is passed; standalone parsing (no resolver) records nothing. The resolver groups pending
-relations by owner and, once the run is walked, resolves each owner's relations and persists the
-owner once.
+And on the backend side, feeding them to the resolver:
 
-This logic replaces the previous manual graph traversal and guarantees consistent handling across all harvest back‑ends.
+```python
+item, relations = from_rdf(graph, item, node, remote_url_prefix=..., dryrun=...)
+self.relations.register(item, relations)
+```
+
+This logic replaces the previous manual graph traversal and guarantees a relation can point to
+an item that appears later in the same catalog (consistent handling across all harvest back‑ends).
 
 The used namespaces are:
 

@@ -47,12 +47,19 @@ class MyHarvester(BaseBackend):
 
 ## Reference handling
 
-FIXME[series]: review doc
-
 Harvested items are now built in two distinct phases:
 
-1. **Parsing phase** – each RDF node is turned into a model (`Dataset` or `Dataservice`).  The model is created and populated, and any cross‑resource link is stored as a *pending relation* on the run's `RelationResolver` via its `add_pending_relation()` API (the `*_from_rdf` parsers only do this when passed a resolver). No `save()` is performed at this stage.
-2. **Resolution phase** – after all items of a harvest job have been parsed, `RelationResolver` builds a lookup registry of all harvested objects (by `remote_id` and by absolute URI) once per relation kind. Pending relations are grouped by owner: it resolves each owner's relations, updates the owner object (`Dataset.in_series`, `Dataservice.datasets`, …), and persists the owner once (unless the job runs in *dry‑run* mode). Resolving per owner keeps a failure local to a single record.
+1. **Parsing phase** – each RDF node is turned into a model (`Dataset` or `Dataservice`). The
+   model is created and populated, and any cross‑resource link is returned by the parser as a
+   *pending relation* (`PendingRelation`). No `save()` is performed. The `*_from_rdf` parsers
+   always return `(model, relations)`; the backend then feeds them to its `RelationResolver` via
+   `self.relations.register(item, relations)`.
+2. **Resolution phase** – after all items of a harvest job have been parsed, `RelationResolver`
+   builds a single set of lookup registries of all harvested objects (by `remote_id`, by
+   `harvest.uri`, and by run‑scoped record UUID) and resolves the pending relations, grouped by
+   owner: it applies each owner's resolved relations (setting `Dataset.in_series`,
+   `Dataservice.datasets`, …) and persists the owner once (unless the job runs in *dry‑run*
+   mode). Resolving per owner keeps a failure local to a single record.
 
 The two‑pass design guarantees that a relation can point to an object that appears later in the same catalog.
 
@@ -64,7 +71,15 @@ subclass is its own kind, identified by its `predicate`:
 - **`ServesDatasetRelation`** (`dcat:servesDataset`) – a dataservice serves one or more datasets. The relation is stored in `dataservice.datasets`.
 
 ### Adding a new relation type
-When implementing a new harvest backend you can create a custom `PendingRelation` subclass (see the *Extending udata* doc): set its `predicate` and implement `from_rdf`, `lookup_keys`, `resolve` and `apply`. Inside the RDF parser, pass the run's resolver to `*_from_rdf` so it records pending relations via `resolver.add_pending_relation(owner, relation_cls, node)`, and call `resolver.resolve()` once the run has been walked — e.g. from the backend's `inner_harvest` `finally` (see below).
+When implementing a new harvest backend you can create a custom relation subclass of
+`Relation` (see `udata.core.harvest`): set its `predicate` and implement `apply()` (and
+`identifiers_from_rdf()` when the default lenient collection doesn't fit); the base class
+provides `from_rdf()` and `resolve()`. Concrete kinds live in the core modules — e.g.
+`InSeriesRelation` in `udata.core.dataset.rdf`, `ServesDatasetRelation` in
+`udata.core.dataservices.rdf`. Inside the parser, return the produced `PendingRelation`s
+alongside the model; the backend registers them via `self.relations.register(item, relations)`
+and calls `self.relations.resolve()` once the run has been walked — e.g. from the backend's
+`inner_harvest` `finally` (see below).
 
 For example, the DCAT backend resolves relations from its `inner_harvest` `finally`, so they are always executed even when the main loop fails part-way through:
 
@@ -76,6 +91,24 @@ def inner_harvest(self):
     finally:
         with self.failsafe("resolve relations"):
             self.relations.resolve()
+```
+
+The backend's item processor registers each model's refs as they are processed:
+
+```python
+def item_processor(
+    self, harvest_item, node, graph, page_number, *, from_rdf, model
+):
+    item = self.get_item(harvest_item.remote_id, model)
+    item, relations = from_rdf(
+        graph,
+        item,
+        node,
+        remote_url_prefix=...,
+        dryrun=self.dryrun,
+    )
+    self.relations.register(item, relations)
+    return item
 ```
 
 `BaseBackend.failsafe(label, *, job_error=True)` runs a finalizer step so it can never crash the run or block later steps: if the body raises, the failure is logged and (when `job_error` is true) recorded as a `HarvestError`, and does **not** propagate. Use one `failsafe` block per step so a failing step never prevents the next one (e.g. a `resolve()` failure must not stop `store_graphs()`). Set `job_error=False` for steps that should only be logged, like `harvest()`'s org-metrics update.
