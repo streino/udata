@@ -1863,8 +1863,7 @@ class RemoteIdTest:
         )
 
     def test_remote_id_no_fallback_when_disabled(self):
-        # Dataservices currently don't fall back to the node URI (FIXME[series]:
-        # consolidate behavior?) — they yield no remote_id and are skipped.
+        # Dataservices currently don't fall back to the node URI. No remote_id => None.
         assert (
             self.backend.remote_id(URIRef("http://x/svc/no-id"), self.graph, fallback_to_uri=False)
             is None

@@ -140,6 +140,7 @@ class InSeriesRelation(DatasetRelation):
     def apply(cls, owner: Harvestable, targets: Sequence[Dataset]) -> None:
         if not targets:
             return
+        # FIXME[series]: comment
         parent = targets[0]
 
         log.info(f"REFS: apply: extras.dcat.in_series = {str(parent.id)}")
@@ -1143,13 +1144,13 @@ def dataset_from_rdf(
     dataset.harvest.dct_identifier = identifier
     dataset.harvest.uri = uri
     dataset.harvest.remote_url = remote_url
-    # FIXME[series]: improve comment
-    # Transient attribute, not a model field: the record UUID only needs to live for the
-    # duration of a single harvest run so pending `urn:iso19139:parent:<uuid>` relations
-    # can be resolved against it (see udata.core.harvest.RelationResolver).
-    dataset._remote_record_id = record_identifier_from_rdf(graph, d)
     dataset.harvest.created_at = created_at
     dataset.harvest.issued_at = issued_at
+
+    # TODO: store in `harvest` or extras?
+    # Transient attribute, not a model field: the record UUID only needs to live for the duration of
+    # a single harvest run, so pending relations can be resolved against it. See RelationResolver.
+    dataset._remote_record_id = record_identifier_from_rdf(graph, d)
 
     # :FutureHarvestModifiedAt
     dataset.harvest.modified_at = safe_harvest_datetime(

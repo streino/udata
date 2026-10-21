@@ -74,7 +74,6 @@ def extract_graph(source, target, node, specs):
 H = TypeVar("H", bound=Harvestable)
 
 
-# FIXME[series]: reorganize structure
 class DcatBackend(BaseBackend):
     name = "dcat"
     display_name = "DCAT"
@@ -164,13 +163,13 @@ class DcatBackend(BaseBackend):
                 model=Dataservice,
             )
 
+    # TODO: consolidate behavior (always/never fallback_to_uri)?
     def remote_id(self, node: Node, graph: Graph, *, fallback_to_uri: bool = True) -> str | None:
         """The remote ID of a node: its `dct:identifier`, else its node URI.
 
         Datasets fall back to the node's URI when no `dct:identifier` is present (a node can be
         referenced by URI only). Dataservices currently don't (they are skipped without an
         identifier).
-        # FIXME[series]: consolidate behavior?
         """
         if v := graph.value(node, DCT.identifier):
             return str(v)

@@ -57,14 +57,14 @@ class HarvestMetadata(EmbeddedDocument):
     archived_reason = field(StringField())
 
 
-# FIXME[series]: add tests?
 class Harvestable(Owned):
     """Base class for the models that can be harvested."""
 
-    # Type annotation only: each concrete model declares its own `harvest` field.
+    # Type annotation only - Concrete model MUST declare its own `harvest` field.
     harvest: HarvestMetadata
 
-    # FIXME[series]: add comment
+    # FIXME[series]: don't assigne here?
+    # Concrete model MUST set its concrete `HarvestMetadata` subclass.
     harvest_metadata_class: type[HarvestMetadata] = HarvestMetadata
 
     def set_harvested(self) -> None:
@@ -156,7 +156,7 @@ class Relation(ABC, Generic[H]):
                 # the catalog domain).
                 target = resource_registry.get(ref.value)
                 if target is None and ref.endswith_allowed:
-                    # FIXME[series]: revisit the exact endswith surface with the Europe XSLT.
+                    # TODO: fix or remove endswith hack
                     target = next((v for k, v in remote_ids.items() if k.endswith(ref.value)), None)
             if target is not None and target not in targets:
                 targets.append(target)
