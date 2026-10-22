@@ -39,7 +39,6 @@ class ServesDatasetRelation(DatasetRelation):
     def apply(cls, owner: Harvestable, targets: Sequence[Dataset]) -> None:
         for dataset in targets:
             if dataset not in owner.datasets:
-                log.info(f"REFS: apply: datasets += Dataset({dataset.id})")
                 owner.datasets.append(dataset)
 
 

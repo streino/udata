@@ -142,8 +142,6 @@ class InSeriesRelation(DatasetRelation):
             return
         # FIXME[series]: comment
         parent = targets[0]
-
-        log.info(f"REFS: apply: extras.dcat.in_series = {str(parent.id)}")
         set_dcat_extra(owner, "in_series", str(parent.id))
 
 

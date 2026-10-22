@@ -230,13 +230,11 @@ class RelationResolver:
     def register(
         self, item: Harvestable, relations: Sequence[PendingRelation] | None = None
     ) -> None:
-        log.info(f"REFS: register: item={type(item).__name__}({getattr(item, 'id', None)})")
         self._items.append(item)
         for relation in relations or []:
             self._pending[item].append(relation)
 
     def resolve(self) -> None:
-        log.info("REFS: resolving...")
         if not self._pending:
             return
         resource_registry, remote_ids, record_registry = self._build_registries(self._items)
@@ -250,11 +248,6 @@ class RelationResolver:
                     record_registry,
                 )
                 if targets:
-                    log.info(
-                        f"REFS: resolve: kind={relation.relation_cls.__name__}, "
-                        f"owner={type(owner).__name__}({getattr(owner, 'id', None)}), "
-                        f"{targets=}"
-                    )
                     relation.relation_cls.apply(owner, targets)
                     mutated = True
             if mutated and not self.dryrun:
