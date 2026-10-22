@@ -57,6 +57,7 @@ from udata.rdf import (
     contact_points_from_rdf,
     contact_points_to_rdf,
     default_lang_value,
+    get_dcat_extra,
     localname,
     namespace_manager,
     rdf_unique_values,
@@ -65,6 +66,7 @@ from udata.rdf import (
     remote_url_from_rdf,
     sanitize_html,
     schema_from_rdf,
+    set_dcat_extra,
     set_harvested_date,
     themes_from_rdf,
     url_from_rdf,
@@ -876,22 +878,6 @@ def inspire_category_from_rights(rights: Collection[str]) -> InspireLimitationCa
             return category
 
     return None
-
-
-def set_dcat_extra(obj: Dataset | Resource, property: URIRef | str, value: str | Collection):
-    key = localname(property) if isinstance(property, URIRef) else property
-    if not isinstance(value, str):
-        value = list(value)
-    obj.extras["dcat"] = {
-        **obj.extras.get("dcat", {}),
-        key: value,
-    }
-
-
-def get_dcat_extra(obj: Dataset | Resource, property: URIRef | str) -> str | list | None:
-    key = localname(property) if isinstance(property, URIRef) else property
-    if dcat := obj.extras.get("dcat"):
-        return dcat.get(key)
 
 
 def get_unanimous_dcat_extra(

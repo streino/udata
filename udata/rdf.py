@@ -4,6 +4,7 @@ This module centralize udata-wide RDF helpers and configuration
 
 import logging
 import re
+from collections.abc import Collection
 from html.parser import HTMLParser
 from typing import Iterator, cast
 from urllib.parse import quote
@@ -30,6 +31,8 @@ from rdflib.util import guess_format as raw_guess_format
 
 from udata import uris
 from udata.core.contact_point.models import ContactPoint
+from udata.core.dataservices.models import Dataservice
+from udata.core.dataset.models import Dataset, Resource
 from udata.core.organization.models import Organization
 from udata.core.owned import ownership_filter
 from udata.core.user.models import User
@@ -172,6 +175,28 @@ CONTACT_POINT_ENTITY_TO_ROLE = {
 
 def localname(uriref: URIRef) -> str:
     return split_uri(uriref)[1]
+
+
+def set_dcat_extra(
+    obj: Dataset | Dataservice | Resource,
+    property: URIRef | str,
+    value: str | Collection,
+) -> None:
+    key = localname(property) if isinstance(property, URIRef) else property
+    if not isinstance(value, str):
+        value = list(value)
+    obj.extras["dcat"] = {
+        **obj.extras.get("dcat", {}),
+        key: value,
+    }
+
+
+def get_dcat_extra(
+    obj: Dataset | Dataservice | Resource, property: URIRef | str
+) -> str | list | None:
+    key = localname(property) if isinstance(property, URIRef) else property
+    if dcat := obj.extras.get("dcat"):
+        return dcat.get(key)
 
 
 def guess_format(string):

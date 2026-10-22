@@ -7,6 +7,8 @@ from rdflib import (
 )
 from rdflib.resource import Resource as RdfResource
 
+from udata.core.dataservices.models import Dataservice
+from udata.core.dataset.models import Dataset, Resource
 from udata.core.organization.factories import OrganizationFactory
 from udata.models import ContactPoint
 from udata.rdf import (
@@ -25,8 +27,10 @@ from udata.rdf import (
     contact_point_from_vcard,
     contact_points_from_rdf,
     contact_points_to_rdf,
+    get_dcat_extra,
     guess_format,
     negociate_content,
+    set_dcat_extra,
     vocabulary_key,
     want_rdf,
 )
@@ -96,6 +100,85 @@ class GuessFormatTest(object):
 
     def test_unkown_mime(self):
         assert guess_format("unknown/mime") is None
+
+
+class DcatExtrasTest:
+    @pytest.mark.parametrize("kind", ["dataset", "dataservice", "resource"])
+    def test_set_dcat_extra(self, kind):
+        obj = self._make_object(kind)
+
+        # assign
+        set_dcat_extra(obj, "foo", "aa")
+        assert obj.extras["dcat"]["foo"] == "aa"
+
+        # override
+        set_dcat_extra(obj, "foo", "bb")
+        assert obj.extras["dcat"]["foo"] == "bb"
+
+        # extend
+        set_dcat_extra(obj, "bar", "cc")
+        assert obj.extras["dcat"]["foo"] == "bb"
+        assert obj.extras["dcat"]["bar"] == "cc"
+
+        # list type
+        set_dcat_extra(obj, "foo", ["aa", "bb"])
+        assert obj.extras["dcat"]["foo"] == ["aa", "bb"]
+        set_dcat_extra(obj, "foo", ["aa"])
+        assert obj.extras["dcat"]["foo"] == ["aa"]  # != "aa"
+
+        # set type
+        set_dcat_extra(obj, "foo", {"aa", "bb"})
+        val = obj.extras["dcat"]["foo"]
+        assert isinstance(val, list)
+        assert sorted(val) == ["aa", "bb"]
+
+        # uriref
+        set_dcat_extra(obj, DCT.accessRights, "xx")
+        assert obj.extras["dcat"]["accessRights"] == "xx"
+
+        # empty
+        set_dcat_extra(obj, "foo", "")
+        assert obj.extras["dcat"]["foo"] == ""
+        set_dcat_extra(obj, "foo", [])
+        assert obj.extras["dcat"]["foo"] == []
+
+    @pytest.mark.parametrize("kind", ["dataset", "dataservice", "resource"])
+    def test_get_dcat_extra(self, kind):
+        obj = self._make_object(kind)
+
+        # missing
+        assert get_dcat_extra(obj, "missing") is None
+
+        # str
+        set_dcat_extra(obj, DCT.accessRights, "xx")
+        assert get_dcat_extra(obj, DCT.accessRights) == "xx"
+        assert get_dcat_extra(obj, "accessRights") == "xx"
+
+        # list
+        set_dcat_extra(obj, "foo", ["aa", "bb"])
+        assert get_dcat_extra(obj, "foo") == ["aa", "bb"]
+
+        # set
+        set_dcat_extra(obj, "foo", {"aa", "bb"})
+        val = get_dcat_extra(obj, "foo")
+        assert isinstance(val, list)
+        assert sorted(val) == ["aa", "bb"]
+
+        # empty
+        set_dcat_extra(obj, "foo", "")
+        assert get_dcat_extra(obj, "foo") == ""
+        set_dcat_extra(obj, "foo", [])
+        assert get_dcat_extra(obj, "foo") == []
+
+    @staticmethod
+    def _make_object(kind):
+        if kind == "dataset":
+            return Dataset()
+        if kind == "dataservice":
+            return Dataservice()
+        if kind == "resource":
+            return Resource()
+        raise ValueError(f"unknown kind: {kind}")
 
 
 class ContactToRdfTest:
