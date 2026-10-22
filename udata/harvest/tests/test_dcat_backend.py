@@ -228,6 +228,22 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         # catalog is simply ignored.
         assert [dataset.title for dataset in dataservice.datasets] == ["Dataset 1"]
 
+    def test_harvest_dataservices_serving_datasets_referenced_by_identifier(self, rmock):
+        """A `dcat:servesDataset` can reference a served dataset by its `dcterms:identifier`.
+        The dataset is harvested from another catalog entry of the same run and attached
+        through the run-scoped resolver (new dataset -> new dataservice)."""
+
+        url = mock_dcat(rmock, "serves-dataset.xml")
+        source = HarvestSourceFactory(backend="dcat", url=url, organization=OrganizationFactory())
+
+        actions.run(source)
+
+        source.reload()
+        assert [item.status for item in source.get_last_job().items] == ["done", "done"]
+
+        dataservice = Dataservice.objects.first()
+        assert [dataset.harvest.remote_id for dataset in dataservice.datasets] == ["1"]
+
     def test_harvest_datasetseries(self, rmock):
         rmock.get("https://example.com/schemas", json=ResourceSchemaMockData.get_mock_data())
 

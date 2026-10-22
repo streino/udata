@@ -79,6 +79,7 @@ from udata.rdf import (
     slugify_tag,
 )
 from udata.tests.api import PytestOnlyAPITestCase, PytestOnlyDBTestCase
+from udata.tests.harvest_helpers import build_dataset
 from udata.tests.helpers import argvalues, assert200, assert_redirects
 from udata.utils import faker
 
@@ -2454,18 +2455,6 @@ class DcatHelpersTest:
         assert get_unanimous_dcat_extra([r1, r2], "foo") is None
 
 
-def build_dataset(remote_id=None, uri=None, record_uuid=None) -> Dataset:
-    harvest = {}
-    if remote_id:
-        harvest["remote_id"] = remote_id
-    if uri:
-        harvest["uri"] = uri
-    dataset = Dataset(harvest=harvest)
-    if record_uuid:
-        dataset._remote_record_id = record_uuid
-    return dataset
-
-
 class DatasetRelationTest:
     """Base `DatasetRelation` behavior (collection + resolution), exercised through the concrete
     `InSeriesRelation`."""
@@ -2732,3 +2721,41 @@ class InSeriesRelationTest(PytestOnlyDBTestCase):
         InSeriesRelation.apply(child, [parent])
 
         child.save.assert_not_called()
+
+
+class RecordIdentifierFromRdfTest:
+    """Direct, DB-free unit tests of `record_identifier_from_rdf`, the identifier-extraction
+    helper that powers `remote_url_from_rdf` and the run-scoped record registry."""
+
+    def record_identifier(self, identifier_literal):
+        node = BNode()
+        graph = Graph()
+        graph.add((node, RDF.type, DCAT.Dataset))
+        record = BNode()
+        graph.add((record, RDF.type, DCAT.CatalogRecord))
+        graph.add((record, DCT.identifier, identifier_literal))
+        graph.add((record, FOAF.primaryTopic, node))
+        return record_identifier_from_rdf(graph, graph.resource(node))
+
+    def test_urn_uuid_any_uri_is_stripped(self):
+        """An ISO-19115-3 (anyURI) `urn:uuid:` codeSpace is stripped to expose the raw UUID."""
+        identifier = Literal("urn:uuid:ff685ba4-587e-4bb3-bc87-eae919b56857", datatype=XSD.anyURI)
+
+        assert self.record_identifier(identifier) == "ff685ba4-587e-4bb3-bc87-eae919b56857"
+
+    def test_urn_uuid_string_prefix_is_kept(self):
+        """An ISO-19139 identifier is a plain string: the `urn:uuid:` prefix carries no codeSpace
+        meaning and is kept as part of the identifier."""
+        identifier = Literal("urn:uuid:ff685ba4-587e-4bb3-bc87-eae919b56857", datatype=XSD.string)
+
+        assert self.record_identifier(identifier) == "urn:uuid:ff685ba4-587e-4bb3-bc87-eae919b56857"
+
+    def test_plain_string_identifier(self):
+        assert self.record_identifier(Literal("some-id")) == "some-id"
+
+    def test_missing_record_is_none(self):
+        node = BNode()
+        graph = Graph()
+        graph.add((node, RDF.type, DCAT.Dataset))
+
+        assert record_identifier_from_rdf(graph, graph.resource(node)) is None

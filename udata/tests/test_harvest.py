@@ -13,23 +13,13 @@ from typing import cast
 
 from rdflib import Graph, Namespace, URIRef
 
-from udata.core.dataset.models import Dataset
+from udata.core.dataservices.models import Dataservice, HarvestDataserviceMetadata
+from udata.core.dataset.models import Dataset, HarvestDatasetMetadata
 from udata.core.dataset.rdf import InSeriesRelation
 from udata.core.harvest import ReferenceValue, Relation, RelationResolver
+from udata.tests.harvest_helpers import build_dataset
 
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
-
-
-def build_dataset(remote_id=None, uri=None, record_uuid=None) -> Dataset:
-    harvest = {}
-    if remote_id:
-        harvest["remote_id"] = remote_id
-    if uri:
-        harvest["uri"] = uri
-    dataset = Dataset(harvest=harvest)
-    if record_uuid:
-        dataset._remote_record_id = record_uuid
-    return dataset
 
 
 def service_node():
@@ -206,6 +196,41 @@ class RelationResolverTest:
 
         assert source.extras["fake"] == ["d1", "d2"]
 
+    def test_resolve_target_registered_after_owner(self):
+        """A relation can point to an object that appears *later* in the catalog: the owner is
+        registered before its target, and resolve() still attaches the target."""
+        resolver = RelationResolver(dryrun=True)
+        source = build_dataset(remote_id="service")
+        target = build_dataset(remote_id="d1")
+        resolver.register(source, [FakeRelation.from_rdf(service_node())])
+
+        resolver.register(target)
+        resolver.resolve()
+
+        assert source.extras["fake"] == ["d1"]
+
+    def test_resolve_is_register_order_independent(self):
+        """The resolve() outcome is identical whether the target is registered before or after
+        the owner that references it (same inputs, reversed registration order)."""
+        node = service_node()
+
+        owner_first = RelationResolver(dryrun=True)
+        source_a = build_dataset(remote_id="service")
+        target_a = build_dataset(remote_id="d1")
+        owner_first.register(source_a, [FakeRelation.from_rdf(node)])
+        owner_first.register(target_a)
+        owner_first.resolve()
+
+        target_first = RelationResolver(dryrun=True)
+        source_b = build_dataset(remote_id="service")
+        target_b = build_dataset(remote_id="d1")
+        target_first.register(target_b)
+        target_first.register(source_b, [FakeRelation.from_rdf(node)])
+        target_first.resolve()
+
+        assert source_a.extras["fake"] == ["d1"]
+        assert source_b.extras["fake"] == ["d1"]
+
     def test_resolve_without_pending_is_noop(self):
         target = build_dataset(remote_id="d1")
 
@@ -267,3 +292,33 @@ class RelationResolverTest:
         resolver.resolve()
 
         assert child.extras["dcat"]["in_series"] == str(parent.id)
+
+
+class HarvestableTest:
+    """`Harvestable.set_harvested` instantiates the concrete `harvest_metadata_class` when
+    `harvest` is unset and never clobbers an existing value."""
+
+    def test_set_harvested_creates_concrete_metadata(self):
+        dataset = Dataset()
+
+        dataset.set_harvested()
+
+        assert isinstance(dataset.harvest, HarvestDatasetMetadata)
+
+    def test_set_harvested_is_idempotent(self):
+        dataset = Dataset()
+        dataset.set_harvested()
+        harvest = dataset.harvest
+
+        dataset.set_harvested()
+
+        assert dataset.harvest is harvest
+
+    def test_set_harvested_uses_its_own_metadata_class(self):
+        for model, metadata in (
+            (Dataset, HarvestDatasetMetadata),
+            (Dataservice, HarvestDataserviceMetadata),
+        ):
+            item = model()
+            item.set_harvested()
+            assert isinstance(item.harvest, metadata)
