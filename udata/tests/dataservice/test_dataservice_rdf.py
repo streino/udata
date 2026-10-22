@@ -119,7 +119,7 @@ class DataserviceFromRdfTest(PytestOnlyDBTestCase):
 
         dataservice, relations = dataservice_from_rdf(g, Dataservice(), node)
         assert dataservice.datasets == []
-        assert [type(r.relation_cls).__name__ for r in relations] == ["ServesDatasetRelation"]
+        assert [r.relation_cls.__name__ for r in relations] == ["ServesDatasetRelation"]
 
 
 class DataserviceRdfViewsTest(PytestOnlyAPITestCase):

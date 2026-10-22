@@ -454,7 +454,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
 
         dataset, relations = dataset_from_rdf(g)
         assert dataset.extras.get("dcat", {}).get("in_series") is None
-        assert [type(r.relation_cls).__name__ for r in relations] == ["InSeriesRelation"]
+        assert [r.relation_cls.__name__ for r in relations] == ["InSeriesRelation"]
 
     def test_update(self):
         original = DatasetFactory()
