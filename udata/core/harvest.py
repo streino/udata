@@ -129,7 +129,7 @@ class Relation(ABC, Generic[H]):
         return PendingRelation(cls, refs)
 
     @classmethod
-    def resolve(
+    def resolve_targets(
         cls,
         identifiers: Sequence[ReferenceValue],
         resource_registry: Mapping[str, Harvestable],
@@ -177,9 +177,9 @@ class RelationResolver:
     `*_from_rdf` return declared references as pure `PendingRelation` values; the caller (e.g.
     the DCAT backend's `item_processor`) feeds them to `register()` together with the item.
     Standalone parsing feeds nothing, so nothing is collected. The run owner is responsible for
-    calling `resolve()` at the end of the run.
+    calling `resolve_all()` at the end of the run.
 
-    Pending relations are grouped by their owner. `resolve()` iterates the owners, applies every
+    Pending relations are grouped by their owner. `resolve_all()` iterates the owners, applies every
     resolved relation of an owner, then persists that owner once (unless `dryrun`): minimal delay
     between resolution and save, and a resolution failure only impacts a single owner.
 
@@ -234,14 +234,14 @@ class RelationResolver:
         for relation in relations or []:
             self._pending[item].append(relation)
 
-    def resolve(self) -> None:
+    def resolve_all(self) -> None:
         if not self._pending:
             return
         resource_registry, remote_ids, record_registry = self._build_registries(self._items)
         for owner, relations in self._pending.items():
             mutated = False
             for relation in relations:
-                targets = relation.relation_cls.resolve(
+                targets = relation.relation_cls.resolve_targets(
                     relation.identifiers,
                     resource_registry,
                     remote_ids,

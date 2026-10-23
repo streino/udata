@@ -78,11 +78,11 @@ matching `Relation.apply()`.
 When implementing a new harvest backend you can create a custom relation subclass of
 `Relation` (see `udata.core.harvest`): set its `predicate` and implement `apply()` (and
 `identifiers_from_rdf()` when the default lenient collection doesn't fit); the base class
-provides `from_rdf()` and `resolve()`. Concrete kinds live in the core modules — e.g.
+provides `from_rdf()` and `resolve_targets()`. Concrete kinds live in the core modules — e.g.
 `InSeriesRelation` in `udata.core.dataset.rdf`, `ServesDatasetRelation` in
 `udata.core.dataservices.rdf`. Inside the parser, return the produced `PendingRelation`s
 alongside the model; the backend registers them via `self.relations.register(item, relations)`
-and calls `self.relations.resolve()` once the run has been walked — e.g. from the backend's
+and calls `self.relations.resolve_all()` once the run has been walked — e.g. from the backend's
 `inner_harvest` `finally` (see below).
 
 For example, the DCAT backend resolves relations from its `inner_harvest` `finally`, so they are always executed even when the main loop fails part-way through:
@@ -94,7 +94,7 @@ def inner_harvest(self):
         ...
     finally:
         with self.failsafe("resolve relations"):
-            self.relations.resolve()
+            self.relations.resolve_all()
 ```
 
 The backend's item processor registers each model's refs as they are processed:
@@ -115,7 +115,7 @@ def item_processor(
     return item
 ```
 
-`BaseBackend.failsafe(label, *, job_error=True)` runs a finalizer step so it can never crash the run or block later steps: if the body raises, the failure is logged and (when `job_error` is true) recorded as a `HarvestError`, and does **not** propagate. Use one `failsafe` block per step so a failing step never prevents the next one (e.g. a `resolve()` failure must not stop `store_graphs()`). Set `job_error=False` for steps that should only be logged, like `harvest()`'s org-metrics update.
+`BaseBackend.failsafe(label, *, job_error=True)` runs a finalizer step so it can never crash the run or block later steps: if the body raises, the failure is logged and (when `job_error` is true) recorded as a `HarvestError`, and does **not** propagate. Use one `failsafe` block per step so a failing step never prevents the next one (e.g. a `resolve_all()` failure must not stop `store_graphs()`). Set `job_error=False` for steps that should only be logged, like `harvest()`'s org-metrics update.
 
 **Dry‑run behavior** – During a dry‑run the resolver still builds the registry and resolves references, but the final `save()` calls are skipped, letting you validate the whole graph without persisting anything.
 

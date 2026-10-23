@@ -156,7 +156,7 @@ Resolution is two‑phase:
    `save()` happens here.
 2. **Resolution** — the run owner (currently the DCAT backend) calls
    `self.relations.register(item, relations)` for every processed item, then calls
-   `resolve()` once the whole run has been walked. The resolver rebuilds lookup registries from
+   `resolve_all()` once the whole run has been walked. The resolver rebuilds lookup registries from
    all registered items (by `remote_id`, by `harvest.uri`, and the run‑scoped record UUIDs),
    resolves each owner's relations, applies them to the owner, and saves the owner once.
 

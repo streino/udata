@@ -87,7 +87,7 @@ class RelationResolverTest:
 
         for item in (target1, target2, source):
             resolver.register(item)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert source.extras["fake"] == ["d1", "d2"]
         save.assert_called_once()
@@ -102,7 +102,7 @@ class RelationResolverTest:
 
         for item in (target, source):
             resolver.register(item)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert source.extras["fake"] == ["d1"]
         save.assert_not_called()
@@ -115,7 +115,7 @@ class RelationResolverTest:
         resolver.register(source, [FakeRelation.from_rdf(node)])
 
         resolver.register(source)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert "fake" not in source.extras
         save.assert_not_called()
@@ -156,7 +156,7 @@ class RelationResolverTest:
 
         for item in (target, resolved, unresolved):
             resolver.register(item)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert resolved.extras["fake"] == ["d1"]
         save_resolved.assert_called_once()
@@ -179,7 +179,7 @@ class RelationResolverTest:
         )
         for item in (parent1, parent2, child):
             resolver.register(item)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert child.extras["dcat"]["in_series"] == str(parent1.id)
 
@@ -192,7 +192,7 @@ class RelationResolverTest:
 
         for item in (target1, target2, source):
             resolver.register(item)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert source.extras["fake"] == ["d1", "d2"]
 
@@ -205,7 +205,7 @@ class RelationResolverTest:
         resolver.register(source, [FakeRelation.from_rdf(service_node())])
 
         resolver.register(target)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert source.extras["fake"] == ["d1"]
 
@@ -219,14 +219,14 @@ class RelationResolverTest:
         target_a = build_dataset(remote_id="d1")
         owner_first.register(source_a, [FakeRelation.from_rdf(node)])
         owner_first.register(target_a)
-        owner_first.resolve()
+        owner_first.resolve_all()
 
         target_first = RelationResolver(dryrun=True)
         source_b = build_dataset(remote_id="service")
         target_b = build_dataset(remote_id="d1")
         target_first.register(target_b)
         target_first.register(source_b, [FakeRelation.from_rdf(node)])
-        target_first.resolve()
+        target_first.resolve_all()
 
         assert source_a.extras["fake"] == ["d1"]
         assert source_b.extras["fake"] == ["d1"]
@@ -236,7 +236,7 @@ class RelationResolverTest:
 
         resolver = RelationResolver(dryrun=True)
         resolver.register(target)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert "fake" not in target.extras
 
@@ -248,7 +248,7 @@ class RelationResolverTest:
 
         resolver.register(target1)
         resolver.register(source)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert source.extras["fake"] == ["d1"]
 
@@ -266,7 +266,7 @@ class RelationResolverTest:
         )
         resolver.register(parent)
         resolver.register(child)
-        resolver.resolve()
+        resolver.resolve_all()
 
         resource_registry, _, record_registry = resolver._build_registries(resolver._items)
         assert record_registry == {"12345": parent}
@@ -289,7 +289,7 @@ class RelationResolverTest:
         )
         resolver.register(parent)
         resolver.register(child)
-        resolver.resolve()
+        resolver.resolve_all()
 
         assert child.extras["dcat"]["in_series"] == str(parent.id)
 

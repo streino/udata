@@ -327,7 +327,7 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         )
         backend = get_backend("dcat")(source)
         backend.job = HarvestJob()
-        backend.relations.resolve = mocker.Mock(side_effect=Exception("resolve-failed"))
+        backend.relations.resolve_all = mocker.Mock(side_effect=Exception("resolve-failed"))
         store_graphs = mocker.patch.object(backend, "store_graphs")
 
         backend.inner_harvest()
@@ -349,7 +349,7 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         backend.job = HarvestJob()
         backend.walk_paginated_graph = mocker.Mock(side_effect=Exception("walk-failed"))
         resolve = mocker.Mock()
-        backend.relations.resolve = resolve
+        backend.relations.resolve_all = resolve
         store_graphs = mocker.patch.object(backend, "store_graphs")
 
         with pytest.raises(Exception, match="walk-failed"):

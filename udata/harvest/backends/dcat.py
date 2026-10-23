@@ -94,7 +94,7 @@ class DcatBackend(BaseBackend):
                 self.process_page(page_graph, page_number)
         finally:
             with self.failsafe("resolve relations"):
-                self.relations.resolve()
+                self.relations.resolve_all()
             with self.failsafe("store graphs"):
                 self.store_graphs()
 

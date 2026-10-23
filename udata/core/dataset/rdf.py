@@ -81,7 +81,7 @@ log = logging.getLogger(__name__)
 
 
 # A `dcat:inSeries` (and other cross-references) reference can take two distinct forms, both
-# handled by the base `Relation.resolve` (see `udata.core.harvest`):
+# handled by the base `Relation.resolve_targets` (see `udata.core.harvest`):
 #
 # 1. A *resource reference* (standard, e.g. GeoNetwork): the predicate object is the parent
 #    resource itself, referenced by its `dct:identifier` or resource URI. Resolved against the

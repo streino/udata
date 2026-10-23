@@ -2469,7 +2469,7 @@ class DatasetRelationTest:
         registry = {"1": d1, "2": d2}
         refs = [ReferenceValue("2", endswith_allowed=True)]
 
-        targets = InSeriesRelation.resolve(refs, registry, registry, {})
+        targets = InSeriesRelation.resolve_targets(refs, registry, registry, {})
 
         assert targets == [d2]
 
@@ -2478,7 +2478,7 @@ class DatasetRelationTest:
         registry = {"http://data.test.org/1": d1}
         refs = [ReferenceValue("1", endswith_allowed=True)]
 
-        targets = InSeriesRelation.resolve(refs, registry, registry, {})
+        targets = InSeriesRelation.resolve_targets(refs, registry, registry, {})
 
         assert targets == [d1]
 
@@ -2490,7 +2490,7 @@ class DatasetRelationTest:
         remote_ids = {"http://data.test.org/1": d1}
         refs = [ReferenceValue("1", endswith_allowed=False)]
 
-        targets = InSeriesRelation.resolve(refs, resource_registry, remote_ids, {})
+        targets = InSeriesRelation.resolve_targets(refs, resource_registry, remote_ids, {})
 
         assert targets == []
 
@@ -2499,7 +2499,7 @@ class DatasetRelationTest:
         registry = {"http://ex/1": d1}
         refs = [ReferenceValue("http://ex/1", endswith_allowed=False)]
 
-        targets = InSeriesRelation.resolve(refs, registry, {}, {})
+        targets = InSeriesRelation.resolve_targets(refs, registry, {}, {})
 
         assert targets == [d1]
 
@@ -2510,7 +2510,7 @@ class DatasetRelationTest:
         registry = {"http://ex/api/records/parent": parent}
         refs = [ReferenceValue("http://ex/api/records/parent", endswith_allowed=False)]
 
-        targets = InSeriesRelation.resolve(refs, registry, {}, {})
+        targets = InSeriesRelation.resolve_targets(refs, registry, {}, {})
 
         assert targets == [parent]
 
@@ -2522,7 +2522,7 @@ class DatasetRelationTest:
         record_registry = {"12345": parent}
         refs = [ReferenceValue("http://ex/api/records/other", endswith_allowed=False)]
 
-        targets = InSeriesRelation.resolve(refs, resource_registry, {}, record_registry)
+        targets = InSeriesRelation.resolve_targets(refs, resource_registry, {}, record_registry)
 
         assert targets == []
 
@@ -2534,7 +2534,7 @@ class DatasetRelationTest:
             ReferenceValue("http://ex/1", endswith_allowed=True),
         ]
 
-        targets = InSeriesRelation.resolve(refs, registry, registry, {})
+        targets = InSeriesRelation.resolve_targets(refs, registry, registry, {})
 
         assert targets == [d1]
 
@@ -2542,7 +2542,7 @@ class DatasetRelationTest:
         registry = {"1": build_dataset(remote_id="1")}
         refs = [ReferenceValue("nope", endswith_allowed=True)]
 
-        targets = InSeriesRelation.resolve(refs, registry, registry, {})
+        targets = InSeriesRelation.resolve_targets(refs, registry, registry, {})
 
         assert targets == []
 
@@ -2553,7 +2553,7 @@ class DatasetRelationTest:
         record_registry = {"12345": parent}
         refs = [ReferenceValue("urn:iso19139:parent:12345", endswith_allowed=False)]
 
-        targets = InSeriesRelation.resolve(refs, {}, {}, record_registry)
+        targets = InSeriesRelation.resolve_targets(refs, {}, {}, record_registry)
 
         assert targets == [parent]
 
@@ -2563,7 +2563,7 @@ class DatasetRelationTest:
         record_registry = {"12345": parent}
         refs = [ReferenceValue("urn:iso19139:parent:unknown", endswith_allowed=False)]
 
-        targets = InSeriesRelation.resolve(refs, {}, {}, record_registry)
+        targets = InSeriesRelation.resolve_targets(refs, {}, {}, record_registry)
 
         assert targets == []
 
@@ -2575,7 +2575,7 @@ class DatasetRelationTest:
         record_registry = {"12345": parent}
         refs = [ReferenceValue("urn:iso19139:parent:12345", endswith_allowed=True)]
 
-        targets = InSeriesRelation.resolve(refs, {}, {}, record_registry)
+        targets = InSeriesRelation.resolve_targets(refs, {}, {}, record_registry)
 
         assert targets == [parent]
 
@@ -2625,7 +2625,7 @@ class RelationResolverRegistryTest:
         resource_registry, remote_ids, _ = self.registries(resolver)
         refs = [ReferenceValue("45", endswith_allowed=True)]
 
-        targets = InSeriesRelation.resolve(refs, resource_registry, remote_ids, {})
+        targets = InSeriesRelation.resolve_targets(refs, resource_registry, remote_ids, {})
 
         assert targets == []
 
