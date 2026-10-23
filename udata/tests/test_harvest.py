@@ -238,6 +238,47 @@ class RelationResolverTest:
         assert source_a.extras["fake"] == ["d1"]
         assert source_b.extras["fake"] == ["d1"]
 
+    def test_resolve_all_accepts_filter_restricts_targets_and_owners(self):
+        """`resolve_all(accepted=...)` restricts which items act as targets and owners.
+
+        Mirrors the DCAT backend's failure semantics: a failed/skipped item (not in
+        `accepted`) is neither exposed as a resolution target nor resolved as an owner.
+        """
+        resolver = RelationResolver(dryrun=True)
+        source = build_dataset(remote_id="service")  # owner — accepted
+        target = build_dataset(remote_id="d1")  # accepted target ("d1" matches)
+        excluded = build_dataset(remote_id="d2")  # would match "d2" but NOT accepted
+        resolver.register(source, [FakeRelation.from_rdf(service_node())])
+        for item in (target, excluded, source):
+            resolver.register(item)
+
+        resolver.resolve_all(accepted=[target, source])
+
+        assert source.extras["fake"] == ["d1"]
+        # "d2" would have matched too, but `excluded` was filtered out of the registries.
+        assert "d2" not in source.extras["fake"]
+
+    def test_resolve_all_accepts_filter_skips_rejected_owner(self, mocker):
+        """A rejected owner (not in `accepted`) does not have its relations applied/saved."""
+        resolver = RelationResolver(dryrun=False)
+        accepted_owner = build_dataset(remote_id="service1")
+        rejected_owner = build_dataset(remote_id="service2")
+        save_accepted = mocker.patch.object(accepted_owner, "save")
+        save_rejected = mocker.patch.object(rejected_owner, "save")
+        target = build_dataset(remote_id="d1")
+        node = service_node()
+        resolver.register(accepted_owner, [FakeRelation.from_rdf(node)])
+        resolver.register(rejected_owner, [FakeRelation.from_rdf(node)])
+        for item in (target, accepted_owner, rejected_owner):
+            resolver.register(item)
+
+        resolver.resolve_all(accepted=[target, accepted_owner])
+
+        assert accepted_owner.extras["fake"] == ["d1"]
+        save_accepted.assert_called_once()
+        assert "fake" not in rejected_owner.extras
+        save_rejected.assert_not_called()
+
     def test_resolve_without_pending_is_noop(self):
         target = build_dataset(remote_id="d1")
 

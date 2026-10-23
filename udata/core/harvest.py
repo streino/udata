@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar, cast
 
@@ -268,11 +268,34 @@ class RelationResolver:
         for relation in relations or []:
             self._pending[item].append(relation)
 
-    def resolve_all(self) -> None:
-        if not self._pending:
+    def resolve_all(self, accepted: Collection[Harvestable] | None = None) -> None:
+        """Resolve the pending relations, optionally restricted to `accepted` items.
+
+        When `accepted` is None, every registered item participates: it is both a
+        potential resolution *target* (it may end up in the built registries) and, if it
+        declared relations, a potential *owner* (its relations may be applied and the
+        owner persisted).
+
+        When `accepted` is provided, only those items do so. The harness (e.g. the DCAT
+        backend) passes the run's successfully-persisted items, derived from job status:
+        a failed/skipped item then is neither exposed as a resolution target nor resolved
+        or re-persisted as an owner. Registration order is irrelevant in either mode,
+        because the registries are rebuilt here from the effective items.
+        """
+        if accepted is None:
+            items, pending = self._items, self._pending
+        else:
+            accepted_set = set(accepted)
+            items = [item for item in self._items if item in accepted_set]
+            pending = {
+                owner: relations
+                for owner, relations in self._pending.items()
+                if owner in accepted_set
+            }
+        if not pending:
             return
-        resource_registry, remote_ids, record_registry = self._build_registries(self._items)
-        for owner, relations in self._pending.items():
+        resource_registry, remote_ids, record_registry = self._build_registries(items)
+        for owner, relations in pending.items():
             mutated = False
             for relation in relations:
                 targets = relation.relation_cls.resolve_targets(

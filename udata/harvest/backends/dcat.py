@@ -95,9 +95,26 @@ class DcatBackend(BaseBackend):
                 self.process_page(page_graph, page_number)
         finally:
             with self.failsafe("resolve relations"):
-                self.relations.resolve_all()
+                self.relations.resolve_all(self._accepted_items())
             with self.failsafe("store graphs"):
                 self.store_graphs()
+
+    def _accepted_items(self) -> set[Harvestable]:
+        """The run's successfully-persisted items, derived from job statuses.
+
+        Only these may participate in relation resolution as a *target* of another
+        relation or as an *owner* whose relations get applied and persisted. Passing them
+        to `RelationResolver.resolve_all` guarantees a failed or skipped item is neither
+        exposed as a resolution target nor re-persisted as an owner.
+        """
+        accepted = set()
+        for harvest_item in self.job.items:
+            if harvest_item.status != "done":
+                continue
+            item = harvest_item.dataset or harvest_item.dataservice
+            if item is not None:
+                accepted.add(item)
+        return accepted
 
     @cached_property
     def format(self) -> str:
