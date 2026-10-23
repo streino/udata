@@ -15,6 +15,8 @@ from udata.core.dataservices.rdf import (
     dataservice_to_rdf,
 )
 from udata.core.dataset.factories import DatasetFactory
+from udata.core.dataset.models import HarvestDatasetMetadata
+from udata.core.harvest import RelationResolver
 from udata.rdf import (
     DCAT,
     DCATAP,
@@ -214,3 +216,89 @@ class ServesDatasetRelationTest(PytestOnlyDBTestCase):
         ServesDatasetRelation.apply(owner, [d1])
 
         owner.save.assert_not_called()
+
+    @staticmethod
+    def _resolvable(remote_id=None, uri=None):
+        """A real, DB-backed `Dataset` carrying resolvable harvest identifiers."""
+        harvest = HarvestDatasetMetadata(remote_id=remote_id, uri=uri)
+        dataset = DatasetFactory(harvest=harvest)
+        dataset.save()
+        return dataset
+
+    def _serves_graph(self, refs):
+        """A graph whose dataservice node `dcat:servesDataset`-references each `ref`."""
+        graph = Graph()
+        node = URIRef("http://ex/service")
+        for ref in refs:
+            graph.add((node, DCAT.servesDataset, URIRef(ref)))
+        return graph, node
+
+    def test_resolve_serves_dataset_by_uri_end_to_end(self, mocker):
+        """A dataservice `dcat:servesDataset`-referencing two datasets by their resource URI
+        resolves them run-scoped and appends both to `dataservice.datasets` (0..n collection)."""
+        owner = DataserviceFactory()
+        save = mocker.patch.object(owner, "save")
+        d1 = self._resolvable(uri="http://ex/d1")
+        d2 = self._resolvable(uri="http://ex/d2")
+        graph, node = self._serves_graph(["http://ex/d1", "http://ex/d2"])
+
+        resolver = RelationResolver(dryrun=False)
+        resolver.register(owner, [ServesDatasetRelation.from_rdf(graph.resource(node))])
+        for item in (d1, d2, owner):
+            resolver.register(item)
+        resolver.resolve_all()
+
+        assert list(owner.datasets) == [d1, d2]
+        save.assert_called_once()
+
+    def test_resolve_serves_dataset_by_remote_id_end_to_end(self, mocker):
+        """The same run-scoped resolution also works when datasets are referenced by their
+        `dct:identifier` (collected as an exact match over `harvest.remote_id`)."""
+        owner = DataserviceFactory()
+        mocker.patch.object(owner, "save")
+        d1 = self._resolvable(remote_id="1", uri="http://ex/d1")
+        d2 = self._resolvable(remote_id="2", uri="http://ex/d2")
+        graph = Graph()
+        node = URIRef("http://ex/service")
+        for dataset, remote_id in ((d1, "1"), (d2, "2")):
+            graph.add((node, DCAT.servesDataset, URIRef(dataset.harvest.remote_id)))
+
+        resolver = RelationResolver(dryrun=True)
+        resolver.register(owner, [ServesDatasetRelation.from_rdf(graph.resource(node))])
+        for item in (d1, d2, owner):
+            resolver.register(item)
+        resolver.resolve_all()
+
+        assert list(owner.datasets) == [d1, d2]
+
+    def test_resolve_serves_dataset_skips_unresolved(self, mocker):
+        """A served dataset that is not part of the run is ignored; only resolvable ones are
+        attached (mirrors `test_harvest_dataservices_serving_datasets_referenced_by_uri`)."""
+        owner = DataserviceFactory()
+        mocker.patch.object(owner, "save")
+        d1 = self._resolvable(uri="http://ex/d1")
+        graph, node = self._serves_graph(["http://ex/d1", "http://ex/outside"])
+
+        resolver = RelationResolver(dryrun=True)
+        resolver.register(owner, [ServesDatasetRelation.from_rdf(graph.resource(node))])
+        for item in (d1, owner):
+            resolver.register(item)
+        resolver.resolve_all()
+
+        assert list(owner.datasets) == [d1]
+
+    def test_resolve_dryrun_does_not_save_owner(self, mocker):
+        """A dry-run resolution applies the relation in memory but never persists the owner."""
+        owner = DataserviceFactory()
+        save = mocker.patch.object(owner, "save")
+        d1 = self._resolvable(uri="http://ex/d1")
+        graph, node = self._serves_graph(["http://ex/d1"])
+
+        resolver = RelationResolver(dryrun=True)
+        resolver.register(owner, [ServesDatasetRelation.from_rdf(graph.resource(node))])
+        for item in (d1, owner):
+            resolver.register(item)
+        resolver.resolve_all()
+
+        assert list(owner.datasets) == [d1]
+        save.assert_not_called()
