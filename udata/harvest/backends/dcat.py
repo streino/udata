@@ -1,6 +1,7 @@
 import logging
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import date
 from typing import Callable, ClassVar, Generator, TypeVar
 
@@ -15,7 +16,7 @@ from udata.core.dataservices.models import Dataservice
 from udata.core.dataservices.rdf import dataservice_from_rdf
 from udata.core.dataset.models import Dataset
 from udata.core.dataset.rdf import dataset_from_rdf
-from udata.core.harvest import Harvestable, RelationResolver
+from udata.core.harvest import Harvestable, PendingRelation, RelationResolver
 from udata.harvest.models import HarvestError, HarvestItem
 from udata.i18n import lazy_gettext as _
 from udata.rdf import (
@@ -223,7 +224,7 @@ class DcatBackend(BaseBackend):
         graph: Graph,
         page_number: int,
         *,
-        from_rdf: Callable[..., H],
+        from_rdf: Callable[..., tuple[H, Sequence[PendingRelation[H]]]],
         model: type[H],
     ) -> H:
         """Get-or-create an item by remote ID, parse it from RDF, and register it with the resolver.

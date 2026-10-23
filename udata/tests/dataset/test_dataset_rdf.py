@@ -48,7 +48,7 @@ from udata.core.dataset.rdf import (
     spatial_resolution_from_rdf,
     temporal_from_rdf,
 )
-from udata.core.harvest import ReferenceValue, RelationResolver
+from udata.core.harvest import Harvestable, HarvestMetadata, ReferenceValue, RelationResolver
 from udata.core.organization.factories import OrganizationFactory
 from udata.i18n import gettext as _
 from udata.mongo.datetime_fields import DateRange
@@ -2537,6 +2537,39 @@ class DatasetRelationTest:
         targets = InSeriesRelation.resolve_targets(refs, registry, registry, {})
 
         assert targets == [d1]
+
+    def test_resolve_skips_wrong_type_with_warning(self, caplog):
+        """A registry value that resolves but is not a `Dataset` (e.g. a harvested `Dataservice`
+        under a matched key) is skipped with a warning, not blindly cast."""
+        d1 = build_dataset(remote_id="1")
+
+        class FakeNonDataset(Harvestable):
+            """Minimal concrete `Harvestable` that is not a `Dataset` (DB-free proxy for e.g. a
+            `Dataservice` in a mixed run)."""
+
+            harvest_metadata_class = HarvestMetadata
+
+            def save(self, *args, **kwargs):
+                return None
+
+        wrong = FakeNonDataset()
+        wrong.harvest = HarvestMetadata(remote_id="2")
+        resource_registry = {"1": d1, "2": wrong}
+        refs = [
+            ReferenceValue("1", endswith_allowed=True),
+            ReferenceValue("2", endswith_allowed=True),
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            targets = InSeriesRelation.resolve_targets(
+                refs, resource_registry, resource_registry, {}
+            )
+
+        assert targets == [d1]
+        assert any(
+            "Skipping InSeriesRelation" in rec.message and "expected Dataset" in rec.message
+            for rec in caplog.records
+        )
 
     def test_resolve_unknown_returns_empty(self):
         registry = {"1": build_dataset(remote_id="1")}

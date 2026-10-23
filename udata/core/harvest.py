@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar, cast
 
 from mongoengine import EmbeddedDocument
 from mongoengine.fields import DateTimeField, StringField
@@ -110,8 +110,14 @@ class Relation(ABC, Generic[H]):
     predicate and the apply behavior; everything else is shared.
     """
 
+    # FIXME: move to DatasetRelation
     # The predicate whose objects are the referenced targets (an rdflib term).
     predicate: ClassVar[Node]
+
+    # The concrete `Harvestable` subclass this relation targets (e.g. `Dataset`), declared by
+    # each concrete subclass. Needed at runtime so `resolve_targets` can reject items of the
+    # wrong type (a `cast` would only silence the type checker, not catch the mismatch).
+    harvestable_cls: ClassVar[type[Harvestable]]
 
     @classmethod
     @abstractmethod
@@ -135,15 +141,20 @@ class Relation(ABC, Generic[H]):
         resource_registry: Mapping[str, Harvestable],
         remote_ids: Mapping[str, Harvestable],
         record_registry: Mapping[str, Harvestable],
-    ) -> list[Harvestable]:
+    ) -> Sequence[H]:
         """Resolve the collected `ReferenceValue`s to target items.
 
         `resource_registry` merges `remote_id` + `harvest.uri` keys for exact matches;
         `remote_ids` holds `remote_id` keys only and is the surface the `endswith` fallback
         scans (mirroring `main`: `item.harvest.remote_id.endswith(id)`); `record_registry` maps
         run-scoped record UUIDs for `urn:iso19139:*` record references.
+
+        The registries are typed `Harvestable` (a run mixes `Dataset`/`Dataservice` items);
+        each resolved target is checked against `cls.harvestable_cls` and skipped with a warning
+        if it is not of the expected kind, so the returned `Sequence[H]` is both typed and
+        runtime-verified.
         """
-        targets: list[Harvestable] = []
+        targets: list[H] = []
         for ref in identifiers:
             if ref.value.startswith(ISO19139_URN_PREFIX):
                 # Record reference (SEMIC/ISO-19139): the value is a synthetic URN encoding a
@@ -159,7 +170,18 @@ class Relation(ABC, Generic[H]):
                     # TODO: fix or remove endswith hack
                     target = next((v for k, v in remote_ids.items() if k.endswith(ref.value)), None)
             if target is not None and target not in targets:
-                targets.append(target)
+                if not isinstance(target, cls.harvestable_cls):
+                    log.warning(
+                        "Skipping %s reference %r: resolved target is a %s, expected %s",
+                        cls.__name__,
+                        ref.value,
+                        type(target).__name__,
+                        cls.harvestable_cls.__name__,
+                    )
+                    continue
+                # The isinstance guard above guarantees `target` is really `cls.harvestable_cls`;
+                # the cast only re-binds the wider `Harvestable` static type to `H`.
+                targets.append(cast(H, target))
         return targets
 
     @classmethod
@@ -178,6 +200,11 @@ class RelationResolver:
     the DCAT backend's `item_processor`) feeds them to `register()` together with the item.
     Standalone parsing feeds nothing, so nothing is collected. The run owner is responsible for
     calling `resolve_all()` at the end of the run.
+
+    Deliberately not `Generic[H]`: a single run gathers both `Dataset` and `Dataservice` items
+    and owners (e.g. `dcat:servesDataset` joins a dataservice to a dataset), so there is no single
+    type `H` over which the whole resolver could be soundly parameterized. The per-relation
+    type safety lives on `Relation[H]`/`PendingRelation[H]`; here items stay `Harvestable`.
 
     Pending relations are grouped by their owner. `resolve_all()` iterates the owners, applies every
     resolved relation of an owner, then persists that owner once (unless `dryrun`): minimal delay
@@ -251,4 +278,4 @@ class RelationResolver:
                     relation.relation_cls.apply(owner, targets)
                     mutated = True
             if mutated and not self.dryrun:
-                owner.save()
+                owner.save()  # type: ignore[attr-defined]  # Harvestable is a mixin; concrete models are Documents with save()

@@ -94,6 +94,8 @@ log = logging.getLogger(__name__)
 class DatasetRelation(Relation[Dataset]):
     """A cross-reference whose target is a harvested `Dataset` (e.g. `dcat:inSeries`)."""
 
+    harvestable_cls = Dataset
+
     @classmethod
     def identifiers_from_rdf(cls, node: RdfResource) -> list[ReferenceValue]:
         """Collect the reference values of `cls.predicate` on an rdflib `Resource`.

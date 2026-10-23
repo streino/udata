@@ -29,6 +29,7 @@ def service_node():
 class FakeRelation(Relation[Dataset]):
     """A minimal `Relation` strategy used to drive the generic resolver orchestration."""
 
+    harvestable_cls = Dataset
     predicate = URIRef("http://ex/fake")
     # Default reference values. A subclass can override `refs` to vary what `from_rdf` collects.
     refs: tuple[str, ...] = ("d1", "d2")
