@@ -63,9 +63,16 @@ class Harvestable(Owned):
     # Type annotation only - Concrete model MUST declare its own `harvest` field.
     harvest: HarvestMetadata
 
-    # FIXME[series]: don't assigne here?
-    # Concrete model MUST set its concrete `HarvestMetadata` subclass.
-    harvest_metadata_class: type[HarvestMetadata] = HarvestMetadata
+    # Type annotation only - Concrete model MUST set its concrete `HarvestMetadata` subclass.
+    harvest_metadata_class: ClassVar[type[HarvestMetadata]]
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        if getattr(cls, "harvest_metadata_class", None) is None:
+            raise TypeError(
+                f"{cls.__name__} does not override `harvest_metadata_class` with a concrete "
+                "`HarvestMetadata` subclass"
+            )
 
     def set_harvested(self) -> None:
         if not self.harvest:

@@ -11,12 +11,18 @@ resolution. No database is required.
 
 from typing import cast
 
+import pytest
 from rdflib import Graph, Namespace, URIRef
 
 from udata.core.dataservices.models import Dataservice, HarvestDataserviceMetadata
 from udata.core.dataset.models import Dataset, HarvestDatasetMetadata
 from udata.core.dataset.rdf import InSeriesRelation
-from udata.core.harvest import ReferenceValue, Relation, RelationResolver
+from udata.core.harvest import (
+    Harvestable,
+    ReferenceValue,
+    Relation,
+    RelationResolver,
+)
 from udata.tests.harvest_helpers import build_dataset
 
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
@@ -323,3 +329,12 @@ class HarvestableTest:
             item = model()
             item.set_harvested()
             assert isinstance(item.harvest, metadata)
+
+    def test_set_harvested_raises_when_metadata_class_not_overridden(self):
+        """A model that forgets to override `harvest_metadata_class` fails at class-definition
+        time (no silent use of the instantiable `HarvestMetadata` base)."""
+
+        with pytest.raises(TypeError, match="harvest_metadata_class"):
+
+            class MisconfiguredHarvestable(Harvestable):
+                pass
