@@ -5,7 +5,7 @@ from datetime import date
 from typing import Callable, ClassVar, Generator, TypeVar
 
 from flask import current_app
-from rdflib import Graph, Node, URIRef
+from rdflib import Graph, Node
 from rdflib.namespace import RDF
 from saxonche import PySaxonProcessor, PyXdmNode
 from typing_extensions import override
@@ -154,7 +154,7 @@ class DcatBackend(BaseBackend):
             )
         for node in self.list_dataservices(graph):
             self.process_item(
-                self.remote_id(node, graph, fallback_to_uri=False),
+                self.remote_id(node, graph),
                 self.item_processor,
                 node=node,
                 graph=graph,
@@ -163,19 +163,13 @@ class DcatBackend(BaseBackend):
                 model=Dataservice,
             )
 
-    # TODO: consolidate behavior (always/never fallback_to_uri)?
-    def remote_id(self, node: Node, graph: Graph, *, fallback_to_uri: bool = True) -> str | None:
-        """The remote ID of a node: its `dct:identifier`, else its node URI.
-
-        Datasets fall back to the node's URI when no `dct:identifier` is present (a node can be
-        referenced by URI only). Dataservices currently don't (they are skipped without an
-        identifier).
-        """
+    def remote_id(self, node: Node, graph: Graph) -> str | None:
+        """Return a node's remote id (its `dct:identifier`) or `None`."""
         if v := graph.value(node, DCT.identifier):
             return str(v)
-        if fallback_to_uri and isinstance(node, URIRef):
-            return str(node)
-        return None
+        # FIXME: no dct:identifier => fallback to rdf:about?
+        # - DCAT as a RDF vocabulary has no concept of cardinality.
+        # - DCAT-AP/GeoDCAT-AP have 0..n cardinality.
 
     def list_datasets(self, graph: Graph):
         # Manually deduplicate subjects to ensure a node is only processed once.

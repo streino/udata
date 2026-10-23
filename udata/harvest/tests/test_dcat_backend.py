@@ -295,24 +295,6 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         assert child is not None
         assert "dcat" not in child.extras
 
-    def test_harvest_dataset_with_in_series_resource(self, rmock):
-        """A `dcat:inSeries` referencing the parent by its resource URI (standard, e.g. GeoNetwork)
-        must resolve against the harvested parent's resource URI and be recorded on the child."""
-        source = HarvestSourceFactory(
-            backend="dcat",
-            url=mock_dcat(rmock, "in-series-resource.xml"),
-            organization=OrganizationFactory(),
-        )
-        actions.run(source)
-
-        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
-        assert set(datasets) == {"http://data.test.org/api/records/parent-series", "child"}
-
-        parent = datasets["http://data.test.org/api/records/parent-series"]
-        child = datasets["child"]
-        # The parent carries no dct:identifier, so it is only reachable through its resource URI.
-        assert child.extras["dcat"]["in_series"] == str(parent.id)
-
     def test_harvest_dataset_with_in_series_urn(self, rmock):
         """A `dcat:inSeries` referencing the parent by a `urn:iso19139:parent:<uuid>` URN must be
         resolved against the parent record UUID (run-scoped, not persisted on the model)."""
@@ -1872,19 +1854,8 @@ class RemoteIdTest:
         assert self.backend.remote_id(URIRef("http://x/ds/id"), self.graph) == "ds-id"
         assert self.backend.remote_id(URIRef("http://x/svc/id"), self.graph) == "svc-id"
 
-    def test_remote_id_falls_back_to_uri_for_datasets(self):
-        # A URIRef dataset without dct:identifier is identified by its node URI.
-        assert (
-            self.backend.remote_id(URIRef("http://x/ds/no-id"), self.graph) == "http://x/ds/no-id"
-        )
-
-    def test_remote_id_no_fallback_when_disabled(self):
-        # Dataservices currently don't fall back to the node URI. No remote_id => None.
-        assert (
-            self.backend.remote_id(URIRef("http://x/svc/no-id"), self.graph, fallback_to_uri=False)
-            is None
-        )
-        assert (
-            self.backend.remote_id(URIRef("http://x/ds/no-id"), self.graph, fallback_to_uri=False)
-            is None
-        )
+    def test_remote_id_none_without_identifier(self):
+        # No URI fallback: a node (dataset or dataservice) without a `dct:identifier` has no
+        # remote id, so it is skipped by `process_item` — matching `main` behavior.
+        assert self.backend.remote_id(URIRef("http://x/ds/no-id"), self.graph) is None
+        assert self.backend.remote_id(URIRef("http://x/svc/no-id"), self.graph) is None
