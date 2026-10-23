@@ -142,7 +142,9 @@ class InSeriesRelation(DatasetRelation):
     def apply(cls, owner: Harvestable, targets: Sequence[Dataset]) -> None:
         if not targets:
             return
-        # FIXME[series]: comment
+        # DCAT `inSeries` is 0..n, but the applied behavior is 0..1: a dataset belongs to a single
+        # series, so we keep only the first matching parent and drop any others.
+        # TODO: add log? the extra parents are currently dropped silently.
         parent = targets[0]
         set_dcat_extra(owner, "in_series", str(parent.id))
 

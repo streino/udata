@@ -57,16 +57,20 @@ Harvested items are now built in two distinct phases:
 2. **Resolution phase** – after all items of a harvest job have been parsed, `RelationResolver`
    builds a single set of lookup registries of all harvested objects (by `remote_id`, by
    `harvest.uri`, and by run‑scoped record UUID) and resolves the pending relations, grouped by
-   owner: it applies each owner's resolved relations (setting `Dataset.in_series`,
+   owner: it applies each owner's resolved relations (setting `dataset.extras['dcat']['in_series']`,
    `Dataservice.datasets`, …) and persists the owner once (unless the job runs in *dry‑run*
    mode). Resolving per owner keeps a failure local to a single record.
 
 The two‑pass design guarantees that a relation can point to an object that appears later in the same catalog.
 
 ### Built‑in relation kinds
-Relation kinds are `PendingRelation` subclasses in `udata.core.harvest` (the base), with concrete
-implementations in the core modules (`udata.core.dataset.rdf`, `udata.core.dataservices.rdf`). Each
-subclass is its own kind, identified by its `predicate`:
+Relation kinds are subclasses of `Relation` (base in `udata.core.harvest`), with concrete
+implementations in the core modules (`InSeriesRelation` in `udata.core.dataset.rdf`,
+`ServesDatasetRelation` in `udata.core.dataservices.rdf`). Each subclass is its own kind,
+identified by its `predicate`. A parsed `dcat:inSeries`/`dcat:servesDataset` reference is returned
+by the parser as a pure `PendingRelation` value; the `RelationResolver` later feeds each back to the
+matching `Relation.apply()`.
+
 - **`InSeriesRelation`** (`dcat:inSeries`) – a dataset belongs to a series. The parent series identifier is stored in `dataset.extras['dcat']['in_series']`.
 - **`ServesDatasetRelation`** (`dcat:servesDataset`) – a dataservice serves one or more datasets. The relation is stored in `dataservice.datasets`.
 
