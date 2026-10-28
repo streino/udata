@@ -922,11 +922,17 @@ class BaseBackendTest(PytestOnlyDBTestCase):
 
         try:
             remote_id = getattr(record, "remote_id", None)
-            backend.process_item(remote_id, backend.item_processor, record)
+            item = backend.process_item(remote_id, backend.item_processor, record)
 
             assert len(backend.job.items) == 1
             harvest_item = backend.job.items[0]
             assert isinstance(harvest_item, HarvestItem)
+
+            if record_error:
+                assert item is None
+            else:
+                assert item is not None
+                assert item.harvest.remote_id == remote_id
 
             assert harvest_item.remote_id == remote_id
             assert harvest_item.status == item_status
@@ -944,9 +950,12 @@ class BaseBackendTest(PytestOnlyDBTestCase):
                     else str(record.exception)
                 )
 
-            # nothing more to test for error cases
             if record_error:
+                # nothing more to test for error cases
                 return
+            else:
+                # type narrowing
+                assert remote_id is not None
 
             assert harvest_item.remote_url.endswith(remote_id)
 
@@ -1002,6 +1011,33 @@ class BaseBackendTest(PytestOnlyDBTestCase):
         item = backend.job.items[0].dataset
         assert item == dataset
         assert item.archived_at is None
+
+    def test_process_item_tuple_result(self):
+        """When `item_processor` returns a tuple result, `process_item` saves the `item` as usual
+        and returns the entire tuple.
+        """
+        dataset = DatasetFactory.build(remote_id="dataset")
+
+        class TupleBackend(BaseBackend[tuple[Harvestable, str, str]]):
+            def inner_harvest(self):
+                raise NotImplementedError
+
+            def item_processor(self, _: HarvestItem) -> tuple[Harvestable, str, str]:
+                dataset.set_harvested()
+                return dataset, "foo", "bar"
+
+        backend = TupleBackend(HarvestSourceFactory())
+        backend.job = HarvestJob()
+        backend.remote_ids = set()
+
+        result = backend.process_item("dataset", backend.item_processor)
+
+        assert isinstance(result, tuple)
+        item, foo, bar = result
+        assert item is dataset
+        assert item.harvest.remote_id == "dataset"
+        assert foo == "foo"
+        assert bar == "bar"
 
     @pytest.mark.parametrize(
         "owner_field, owner_factory",
@@ -1096,13 +1132,35 @@ class BaseBackendTest(PytestOnlyDBTestCase):
             job = backend.harvest()
 
             assert job.status == "done"
-            # ensure end_job is fully executed
+            # `update_harvested_organizations` should not record errors.
+            assert job.errors == []
+            # Ensure `end_job()` is fully executed.
             assert job.ended is not None
             signals[pre_save].assert_called_with(HarvestJob, document=job)
             signals[after_harvest_job].assert_called_with(backend)
         finally:
             for signal, receiver in signals.items():
                 signal.disconnect(receiver)
+
+    def test_failsafe_true_records_error(self):
+        backend = MockBackend(HarvestSourceFactory())
+        backend.job = HarvestJob()
+
+        with backend.failsafe("some step", job_error=True):
+            raise ValueError("boom")
+
+        assert len(backend.job.errors) == 1
+        assert backend.job.errors[0].message == "some step: boom"
+        assert backend.job.errors[0].details  # contains the traceback
+
+    def test_failsafe_false_only_logs(self):
+        backend = MockBackend(HarvestSourceFactory())
+        backend.job = HarvestJob()
+
+        with backend.failsafe("some step", job_error=False):
+            raise ValueError("boom")
+
+        assert backend.job.errors == []
 
 
 class HarvestItemLogsTest(PytestOnlyDBTestCase):

@@ -1,3 +1,7 @@
+import logging
+from collections.abc import Sequence
+from typing import Any
+
 from flask import current_app
 from rdflib import RDF, BNode, Graph, Literal, Node, URIRef
 
@@ -5,6 +9,7 @@ from udata.core.constants import HVD
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.models import Dataset, License
 from udata.core.dataset.rdf import dataset_to_graph_id, sanitize_html
+from udata.harvest.relations import ItemIndex, Reference, Relation
 from udata.rdf import (
     CONTACT_POINT_ENTITY_TO_ROLE,
     DCAT,
@@ -17,21 +22,56 @@ from udata.rdf import (
     default_lang_value,
     namespace_manager,
     rdf_value,
+    record_identifier_from_rdf,
+    references_from_rdf,
     remote_url_from_rdf,
     set_harvested_date,
     themes_from_rdf,
     url_from_rdf,
 )
 
+log = logging.getLogger(__name__)
+
+
+class ServesDatasetRelation(Relation[Dataservice, Dataset]):
+    """A dataservice serves one or more datasets (`dcat:servesDataset`)."""
+
+    @property
+    def target_cls(self) -> type[Dataset]:
+        return Dataset
+
+    def match(self, reference: Reference, index: ItemIndex) -> Dataset | None:
+        if target := super().match(reference, index):
+            return target
+        if reference.identifier:
+            # Some ISO catalogs prefix ids with their domain, so we also try a suffix match.
+            # TODO: add to default `Relation.match`?
+            return self._match_suffix(reference.identifier, index)
+
+    def apply(self, source: Dataservice, targets: Sequence[Dataset]) -> bool:
+        # Only adds: datasets attached by other means are kept.
+        new = [d for d in targets if d not in source.datasets]
+        source.datasets.extend(new)
+        return bool(new)
+
+    def _match_suffix(self, identifier: str, index: ItemIndex) -> Dataset | None:
+        # Only match the identifier against `remote_ids`, and only as a delimited suffix so `bcd`
+        # doesn't match `http://example.com/abcd`.
+        #
+        # FIXME: An identifier that is itself an absolute URI should not be suffix-matched, and it's
+        # not clear what to do with identifiers such as `urn:uuid:...`.
+        for remote_id, item in index.remote_ids.items():
+            if isinstance(item, self.target_cls) and remote_id.endswith(f"/{identifier}"):
+                return item
+
 
 def dataservice_from_rdf(
     graph: Graph,
     dataservice: Dataservice,
     node: Node | None,
-    all_datasets: list[Dataset],
     remote_url_prefix: str | None = None,
     dryrun: bool = False,
-) -> Dataservice:
+) -> tuple[Dataservice, Sequence[Relation[Dataservice, Any]]]:
     """
     Create or update a dataservice from a RDF/DCAT graph
     """
@@ -61,46 +101,6 @@ def dataservice_from_rdf(
         contact_point for role in roles for contact_point in role
     ] or dataservice.contact_points
 
-    harvested_datasets = [dataset for dataset in all_datasets if dataset is not None]
-
-    for dataset_node in d.objects(DCAT.servesDataset):
-        # This node references a dataset, it does not define it: the definition lives in
-        # another graph — always so for CSW, where each record is parsed as its own graph —
-        # and sometimes in another catalog entirely, in which case nothing can be attached.
-        # GeoDCAT-AP writes the reference either as a `DCT.identifier` or, when the source
-        # identifier is a URL, as the node URI alone.
-        id = dataset_node.value(DCT.identifier)
-        uri = (
-            dataset_node.identifier.toPython()
-            if isinstance(dataset_node.identifier, URIRef)
-            else None
-        )
-
-        dataset = next(
-            (
-                dataset
-                for dataset in harvested_datasets
-                if (id is not None and dataset.harvest.remote_id == id)
-                or (uri is not None and dataset.harvest.uri == uri)
-            ),
-            None,
-        )
-
-        if dataset is None and id is not None:
-            # We try with `endswith` because Europe XSLT have problems with IDs. Sometimes they are prefixed with the domain of the catalog, sometimes not.
-            dataset = next(
-                (
-                    dataset
-                    for dataset in harvested_datasets
-                    if dataset.harvest.remote_id.endswith(id)
-                ),
-                None,
-            )
-
-        # We append the dataset to the list of the current attached ones if not already attached
-        if dataset is not None and dataset not in dataservice.datasets:
-            dataservice.datasets.append(dataset)
-
     license = rdf_value(d, DCT.license)
     if license is not None:
         dataservice.license = License.guess(license)
@@ -118,7 +118,13 @@ def dataservice_from_rdf(
 
     dataservice.tags = themes_from_rdf(d)
 
-    return dataservice
+    dataservice.record_id = record_identifier_from_rdf(graph, d)
+
+    relations = []
+    if serves_datasets := references_from_rdf(d, DCAT.servesDataset):
+        relations.append(ServesDatasetRelation(serves_datasets))
+
+    return dataservice, relations
 
 
 def dataservice_to_rdf(dataservice: Dataservice, graph=None):

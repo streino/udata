@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rdf:RDF
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:dcat="http://www.w3.org/ns/dcat#"
+  xmlns:dcterms="http://purl.org/dc/terms/"
+>
+  <dcat:Catalog rdf:about="http://data.test.org/">
+    <dcterms:title>Sample DCAT Catalog</dcterms:title>
+    <dcat:dataset>
+      <dcat:Dataset rdf:about="http://data.test.org/datasets/1">
+        <dcterms:title>Dataset 1</dcterms:title>
+        <dcterms:identifier>1</dcterms:identifier>
+        <dcterms:description>Dataset 1 description</dcterms:description>
+      </dcat:Dataset>
+    </dcat:dataset>
+    <dcat:service>
+      <dcat:DataService rdf:about="http://data.test.org/api/">
+        <dcterms:title>An API</dcterms:title>
+        <dcterms:identifier>http://data.test.org/api/</dcterms:identifier>
+        <dcat:endpointURL rdf:resource="http://data.test.org/api/" />
+        <!-- The served dataset is referenced by its dcterms:identifier, not by URI only.
+             It is harvested from another catalog entry but attached through the run-scoped
+             resolver (new -> new in a single run). -->
+        <dcat:servesDataset>
+          <dcat:Dataset>
+            <dcterms:identifier>1</dcterms:identifier>
+          </dcat:Dataset>
+        </dcat:servesDataset>
+      </dcat:DataService>
+    </dcat:service>
+  </dcat:Catalog>
+</rdf:RDF>

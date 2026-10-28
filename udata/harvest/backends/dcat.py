@@ -1,8 +1,9 @@
 import logging
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Generator, Iterator, Sequence
 from datetime import date
-from typing import ClassVar, Generator
+from typing import Any, ClassVar, Concatenate, Protocol
 
 from flask import current_app
 from rdflib import Graph, Node
@@ -15,6 +16,7 @@ from udata.core.dataservices.models import Dataservice
 from udata.core.dataservices.rdf import dataservice_from_rdf
 from udata.core.dataset.models import Dataset
 from udata.core.dataset.rdf import dataset_from_rdf
+from udata.core.harvest import Harvestable
 from udata.harvest.models import HarvestError, HarvestItem
 from udata.i18n import lazy_gettext as _
 from udata.rdf import (
@@ -31,7 +33,8 @@ from udata.rdf import (
 from udata.storage.s3 import store_as_json
 from udata.utils import safe_unicode, uniquify
 
-from .base import BaseBackend, HarvestExtraConfig, HarvestFeature
+from ..relations import Relation, RelationResolver
+from .base import BaseBackend, H, HarvestExtraConfig, HarvestFeature, ProcessorParams
 
 log = logging.getLogger(__name__)
 
@@ -69,13 +72,38 @@ def extract_graph(source, target, node, specs):
             extract_graph(source, target, o, specs[p])
 
 
-class DcatBackend(BaseBackend):
+def remote_id(node: Node, graph: Graph) -> str | None:
+    """Return a node's remote id (its `dct:identifier`) or `None`."""
+    if v := graph.value(node, DCT.identifier):
+        return str(v)
+    # FIXME: no dct:identifier => fallback to rdf:about?
+    # - DCAT as a RDF vocabulary has no concept of cardinality.
+    # - DCAT-AP/GeoDCAT-AP have 0..n cardinality.
+    return None
+
+
+# `item_processor.from_rdf` type signature.
+class FromRdf(Protocol[H]):
+    def __call__(
+        self,
+        graph: Graph,
+        item: H,
+        node: Node,
+        /,
+        *,
+        remote_url_prefix: str | None,
+        dryrun: bool,
+    ) -> tuple[H, Sequence[Relation[H, Any]]]: ...
+
+
+class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]]):
     name = "dcat"
     display_name = "DCAT"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.graphs = list[tuple[Graph, int]]()
+        self.relations = RelationResolver()
 
     @override
     def inner_harvest(self):
@@ -85,21 +113,12 @@ class DcatBackend(BaseBackend):
                 # cache graph first in case processing raises exceptions, so graphs
                 # are always available to store_graphs()
                 self.graphs.append((page_graph, page_number))
-                self.process_one_datasets_page(page_graph, page_number)
-
-            # We do a second pass to have all datasets in memory and attach datasets
-            # to dataservices. It could be better to be one pass of graph walking and
-            # then one pass of attaching datasets to dataservices.
-            for page_graph, page_number in self.graphs:
-                self.process_one_dataservices_page(page_graph, page_number)
+                self.process_page(page_graph, page_number)
         finally:
-            try:
+            with self.failsafe("resolve relations"):
+                self.resolve_relations()
+            with self.failsafe("store graphs"):
                 self.store_graphs()
-            except Exception as e:
-                log.exception(f"Failed to store harvest graphs: {safe_unicode(e)}")
-                self.job.errors.append(
-                    HarvestError(message=safe_unicode(e), details=traceback.format_exc())
-                )
 
     @cached_property
     def format(self) -> str:
@@ -120,9 +139,7 @@ class DcatBackend(BaseBackend):
         return fmt
 
     def walk_paginated_graph(self, url: str) -> Generator[tuple[Graph, int], None, None]:
-        """
-        Yield each RDF page from the source as a separate `Graph`.
-        """
+        """Yield each RDF page from the source as a separate `Graph`."""
         page_number = 0
         while url:
             page_graph = Graph(namespace_manager=namespace_manager)
@@ -144,7 +161,29 @@ class DcatBackend(BaseBackend):
             yield page_graph, page_number
             page_number += 1
 
-    def process_one_datasets_page(self, graph: Graph, page_number: int):
+    def process_page(self, graph: Graph, page_number: int) -> None:
+        for node in self.list_datasets(graph):
+            self.process_item(
+                remote_id(node, graph),
+                self.item_processor,
+                node=node,
+                graph=graph,
+                page_number=page_number,
+                model=Dataset,
+                from_rdf=dataset_from_rdf,
+            )
+        for node in self.list_dataservices(graph):
+            self.process_item(
+                remote_id(node, graph),
+                self.item_processor,
+                node=node,
+                graph=graph,
+                page_number=page_number,
+                model=Dataservice,
+                from_rdf=dataservice_from_rdf,
+            )
+
+    def list_datasets(self, graph: Graph) -> Iterator[Node]:
         # Manually deduplicate subjects to ensure a node is only processed once.
         # Rdflib subjects() will return the same node multiple times if it matches different types,
         # which can occur with ISO series converted by SEMIC (by default it sets rdf:type to both
@@ -152,23 +191,14 @@ class DcatBackend(BaseBackend):
         for node in uniquify(graph.subjects(RDF.type, [DCAT.Dataset, DCAT.DatasetSeries])):
             if self.is_dataset_external_to_this_graph(node, graph):
                 continue
+            yield node
 
-            remote_id = str(v) if (v := graph.value(node, DCT.identifier)) else None
-            self.process_item(
-                remote_id, self.process_dataset, node=node, graph=graph, page_number=page_number
-            )
-
-    def process_one_dataservices_page(self, graph: Graph, page_number: int):
+    def list_dataservices(self, graph: Graph) -> Iterator[Node]:
         access_services = {o for _, _, o in graph.triples((None, DCAT.accessService, None))}
-
         for node in graph.subjects(RDF.type, DCAT.DataService):
             if node in access_services:
                 continue
-
-            remote_id = str(v) if (v := graph.value(node, DCT.identifier)) else None
-            self.process_item(
-                remote_id, self.process_dataservice, node=node, graph=graph, page_number=page_number
-            )
+            yield node
 
     def is_dataset_external_to_this_graph(self, node: Node, graph: Graph) -> bool:
         # In dataservice nodes we have `servesDataset` or `hasPart` that can contains nodes
@@ -198,44 +228,52 @@ class DcatBackend(BaseBackend):
             predicates[0] == DCAT.servesDataset or predicates[0] == DCT.hasPart
         )
 
-    def process_dataset(
+    @override
+    def process_item(
+        self,
+        remote_id: str | None,
+        item_processor: Callable[
+            Concatenate[HarvestItem, ProcessorParams],
+            tuple[Harvestable, Sequence[Relation[Any, Any]]],
+        ],
+        *args: ProcessorParams.args,
+        **kwargs: ProcessorParams.kwargs,
+    ) -> tuple[Harvestable, Sequence[Relation[Any, Any]]] | None:
+        """Process a record into an item, and register its relations for later resolution."""
+        result = super().process_item(remote_id, item_processor, *args, **kwargs)
+        if result is None:
+            return
+
+        item, relations = result
+        self.relations.register(item, relations)
+
+        return result
+
+    def item_processor(
         self,
         harvest_item: HarvestItem,
         node: Node,
         graph: Graph,
         page_number: int,
-    ) -> Dataset:
+        *,
+        model: type[H],
+        from_rdf: FromRdf[H],
+    ) -> tuple[H, Sequence[Relation[H, Any]]]:
+        """Get-or-create an item by remote ID and update it from its RDF `node`."""
         harvest_item.kwargs["page_number"] = page_number
         remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
 
-        dataset = self.get_item(harvest_item.remote_id, Dataset)
-        dataset = dataset_from_rdf(
-            graph, dataset, node=node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun
-        )
+        item = self.get_item(harvest_item.remote_id, model)
+        return from_rdf(graph, item, node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun)
 
-        return dataset
-
-    def process_dataservice(
-        self,
-        harvest_item: HarvestItem,
-        node: Node,
-        graph: Graph,
-        page_number: int,
-    ) -> Dataservice:
-        harvest_item.kwargs["page_number"] = page_number
-        remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
-
-        dataservice = self.get_item(harvest_item.remote_id, Dataservice)
-        dataservice = dataservice_from_rdf(
-            graph,
-            dataservice,
-            node,
-            [itm.dataset for itm in self.job.items],
-            remote_url_prefix=remote_url_prefix,
-            dryrun=self.dryrun,
-        )
-
-        return dataservice
+    def resolve_relations(self) -> None:
+        """Resolve all harvested items relations and persist the updated items."""
+        updated = self.relations.resolve()
+        if self.dryrun:
+            return
+        for item in updated:
+            with self.failsafe(f"save relations of {item.harvest.remote_id}"):
+                item.save()
 
     def store_graphs(self):
         # The official MongoDB document size in 16MB. The default value here is 15MB to account

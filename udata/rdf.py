@@ -4,13 +4,14 @@ This module centralize udata-wide RDF helpers and configuration
 
 import logging
 import re
+from collections.abc import Collection
 from html.parser import HTMLParser
 from typing import Iterator, cast
 from urllib.parse import quote
 
 import mongoengine
 from flask import abort, current_app, request, url_for
-from rdflib import BNode, Graph, Literal, URIRef
+from rdflib import BNode, Graph, Literal, Node, URIRef
 from rdflib.namespace import (
     DCTERMS,
     FOAF,
@@ -30,11 +31,14 @@ from rdflib.util import guess_format as raw_guess_format
 
 from udata import uris
 from udata.core.contact_point.models import ContactPoint
+from udata.core.dataservices.models import Dataservice
+from udata.core.dataset.models import Dataset, Resource
 from udata.core.organization.models import Organization
 from udata.core.owned import ownership_filter
 from udata.core.user.models import User
 from udata.frontend.markdown import parse_html
 from udata.harvest.filters import normalize_tag
+from udata.harvest.relations import Reference
 from udata.models import Schema
 from udata.mongo.errors import FieldValidationError
 from udata.tags import slug as slugify_tag
@@ -167,9 +171,43 @@ CONTACT_POINT_ENTITY_TO_ROLE = {
     predicate: role for role, predicate in AGENT_ROLE_TO_RDF_PREDICATE.items()
 }
 
+URN_UUID_PREFIX = "urn:uuid:"
+
 
 def localname(uriref: URIRef) -> str:
     return split_uri(uriref)[1]
+
+
+def set_dcat_extra(
+    obj: Dataset | Dataservice | Resource,
+    property: URIRef | str,
+    value: str | Collection,
+) -> None:
+    key = localname(property) if isinstance(property, URIRef) else property
+    if not isinstance(value, str):
+        value = list(value)
+    obj.extras["dcat"] = {
+        **obj.extras.get("dcat", {}),
+        key: value,
+    }
+
+
+def get_dcat_extra(
+    obj: Dataset | Dataservice | Resource, property: URIRef | str
+) -> str | list | None:
+    key = localname(property) if isinstance(property, URIRef) else property
+    if dcat := obj.extras.get("dcat"):
+        return dcat.get(key)
+
+
+def unset_dcat_extra(obj: Dataset | Dataservice | Resource, property: URIRef | str) -> None:
+    key = localname(property) if isinstance(property, URIRef) else property
+    if dcat := obj.extras.get("dcat"):
+        remaining = {k: v for k, v in dcat.items() if k != key}
+        if remaining:
+            obj.extras["dcat"] = remaining
+        else:
+            del obj.extras["dcat"]
 
 
 def guess_format(string):
@@ -286,6 +324,11 @@ def rdf_value(
 def rdf_resource(obj: RdfResource, predicate: URIRef) -> RdfResource | None:
     value = obj.value(predicate)
     return value if isinstance(value, RdfResource) else None
+
+
+def raw_value(res: RdfResource, predicate: URIRef, **kwargs) -> Node | None:
+    """Like `RdfResource.value()`, but returns the plain `Node` instead of a `RdfResource`."""
+    return res.graph.value(res.identifier, predicate, **kwargs)
 
 
 def vocabulary_key(uri: str, vocabulary: Namespace) -> str | None:
@@ -548,20 +591,49 @@ def contact_points_to_rdf(contacts, graph=None):
         yield node, role
 
 
-def primary_topic_identifier_from_rdf(graph: Graph, resource: RdfResource):
+def record_identifier_from_rdf(graph: Graph, resource: RdfResource) -> str | None:
+    """Extract the record ID of a DCAT resource, if any.
+
+    The record's `dct:identifier` is looked up through its primary topic: either an inner
+    `foaf:isPrimaryTopicOf` on the resource pointing to the CatalogRecord, or an outer
+    `foaf:primaryTopic` from the CatalogRecord back to the resource. In DCAT, the primary topic
+    should be a unique CatalogRecord (if any), but nothing here prevents it from being something
+    else.
     """
-    Extract the dct:identifier from a primaryTopic of a RdfResource `resource` via an RDF `graph`.
-    The primary topic might be identified by a FOAF:isPrimaryTopicOf from the Resource, or by a FOAF:primaryTopic to the Resource.
-    In DCAT, the primary topic should be a unique CatalogRecord (if any), but nothing here prevents it to be something else.
-    """
-    # look for "inner" primaryTopic linking to Dataset via isPrimaryTopicOf
-    is_primary_topic_of = graph.value(subject=resource.identifier, predicate=FOAF.isPrimaryTopicOf)
-    if is_primary_topic_of:
-        return graph.value(is_primary_topic_of, DCT.identifier)
-    # look for "outer" primaryTopic linking to Dataset via primaryTopic
-    primary_topic = graph.value(predicate=FOAF.primaryTopic, object=resource.identifier)
-    if primary_topic:
-        return graph.value(primary_topic, DCT.identifier)
+    identifier = None
+    if is_primary_topic_of := graph.value(
+        subject=resource.identifier, predicate=FOAF.isPrimaryTopicOf
+    ):
+        identifier = graph.value(is_primary_topic_of, DCT.identifier)
+    elif primary_topic := graph.value(predicate=FOAF.primaryTopic, object=resource.identifier):
+        identifier = graph.value(primary_topic, DCT.identifier)
+
+    if identifier is None:
+        return None
+
+    # Some ISO-19115-3 GeoNetwork templates set a codeSpace for the record ID (e.g. the
+    # geodata-multilingual.xml template), meaning we have:
+    # - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:code = the record ID,
+    # - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:codeSpace = "urn:uuid".
+    #
+    # That codeSpace ends up collapsed in the record dct:identifier. This means dct:identifier
+    # differs (by the codeSpace) from the record ID that GeoNetwork uses internally, including
+    # for its URLs. So we need to extract the original record ID from dct:identifier to build a
+    # valid remote_url.
+    #
+    # URN parsing rules depend on the namespace of the URN (urn:<namespace>:...), so there is no
+    # generic way to extract the codeSpace. Here we only handle the "uuid" namespace (RFC-4122),
+    # which is used in the wild by GeoNetwork (e.g. OFB, Sextant, and likely most future
+    # ISO-19115-3 catalogs that use the default templates).
+    #
+    # Note that the `datatype == xsd:anyURI` test is important. Some *ISO-19139* catalogs are
+    # using "urn:...:" prefixes in their gmd:fileIdentifier (e.g. Geo2France), but ISO-19139 has
+    # no concept of codeSpace, it's simply a string. So in ISO-19139, what looks like a "prefix"
+    # is just an arbitrary part the plain string identifier, with no special meaning.
+    if identifier.datatype == XSD.anyURI and identifier.value.startswith(URN_UUID_PREFIX):
+        identifier = identifier.value[len(URN_UUID_PREFIX) :]
+
+    return str(identifier)
 
 
 def remote_url_from_rdf(rdf: RdfResource, graph: Graph, remote_url_prefix: str | None = None):
@@ -570,30 +642,7 @@ def remote_url_from_rdf(rdf: RdfResource, graph: Graph, remote_url_prefix: str |
     Otherwise, use DCAT.landingPage if found and uri validation succeeds.
     In this latter case, use RDF identifier as fallback if uri validation succeeds.
     """
-    if remote_url_prefix and (identifier := primary_topic_identifier_from_rdf(graph, rdf)):
-        # Some ISO-19115-3 GeoNetwork templates set a codeSpace for the record ID (e.g. the
-        # geodata-multilingual.xml template), meaning we have:
-        # - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:code = the record ID,
-        # - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:codeSpace = "urn:uuid".
-        #
-        # That codeSpace ends up collapsed in the record dct:identifier. This means dct:identifier
-        # differs (by the codeSpace) from the record ID that GeoNetwork uses internally, including
-        # for its URLs. So we need to extract the original record ID from dct:identifier to build a
-        # valid remote_url.
-        #
-        # URN parsing rules depend on the namespace of the URN (urn:<namespace>:...), so there is no
-        # generic way to extract the codeSpace. Here we only handle the "uuid" namespace (RFC-4122),
-        # which is used in the wild by GeoNetwork (e.g. OFB, Sextant, and likely most future
-        # ISO-19115-3 catalogs that use the default templates).
-        #
-        # Note that the datatype == xsd:anyURI test is important. Some *ISO-19139* catalogs are
-        # using "urn:...:" prefixes in their gmd:fileIdentifier (e.g. Geo2France), but ISO-19139 has
-        # no concept of codeSpace, it's simply a string. So in ISO-19139, what looks like a "prefix"
-        # is just an arbitrary part the plain string identifier, with no special meaning.
-        uuid_prefix = "urn:uuid:"
-        if identifier.datatype == XSD.anyURI and identifier.value.startswith(uuid_prefix):
-            offset = len(uuid_prefix)
-            identifier = identifier.value[offset:]
+    if remote_url_prefix and (identifier := record_identifier_from_rdf(graph, rdf)):
         return f"{remote_url_prefix.rstrip('/')}/{identifier}"
 
     landing_page = url_from_rdf(rdf, DCAT.landingPage)
@@ -605,6 +654,33 @@ def remote_url_from_rdf(rdf: RdfResource, graph: Graph, remote_url_prefix: str |
                 return candidate
             except uris.ValidationError:
                 pass
+
+
+def references_from_rdf(resource: RdfResource, predicate: URIRef) -> list[Reference]:
+    """Collect the references declared on `resource` with `predicate`.
+
+    Each `predicate` object yields one `Reference` carrying the identifiers it can be matched
+    against.
+    """
+    values: list[Reference] = []
+    for obj in resource.objects(predicate):
+        if isinstance(obj, Literal):
+            # Bare literals are treated as identifiers (lenient DCAT).
+            values.append(Reference(identifier=str(obj)))
+            continue
+
+        # `obj` narrowed to `RdfResource`, around either a `URIRef` or a `BNode`.
+        identifier = str(v) if (v := raw_value(obj, DCT.identifier)) else None
+        uri = str(obj.identifier) if isinstance(obj.identifier, URIRef) else None
+
+        if identifier is None and uri is None:
+            # Inline blank node without a `dct:identifier`, nothing useable.
+            log.warning(f"No identifiers for {predicate} node")
+            continue
+
+        values.append(Reference(identifier=identifier, uri=uri))
+
+    return uniquify(values)
 
 
 def schema_from_rdf(rdf):

@@ -5,10 +5,11 @@ This module centralize dataset helpers for RDF/DCAT serialization and parsing
 import calendar
 import json
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime
 from fractions import Fraction
 from itertools import chain
+from typing import Any
 
 from dateutil.parser import parse as parse_dt
 from flask import current_app
@@ -24,6 +25,7 @@ from udata.core.constants import HVD
 from udata.core.dataset.models import HarvestResourceMetadata
 from udata.core.spatial.models import SpatialCoverage
 from udata.harvest.exceptions import HarvestSkipException
+from udata.harvest.relations import ItemIndex, Reference, Relation
 from udata.mongo.datetime_fields import DateRange
 from udata.rdf import (
     ADMS,
@@ -51,15 +53,20 @@ from udata.rdf import (
     contact_points_from_rdf,
     contact_points_to_rdf,
     default_lang_value,
+    get_dcat_extra,
     localname,
     namespace_manager,
     rdf_unique_values,
     rdf_value,
+    record_identifier_from_rdf,
+    references_from_rdf,
     remote_url_from_rdf,
     sanitize_html,
     schema_from_rdf,
+    set_dcat_extra,
     set_harvested_date,
     themes_from_rdf,
+    unset_dcat_extra,
     url_from_rdf,
     vocabulary_key,
 )
@@ -147,6 +154,43 @@ QUDT_TO_UDATA = {
     QUDT.KiloM: DistanceUom.KILOMETER,
     QUDT.M: DistanceUom.METER,
 }
+
+# Custom (SEMIC XSLT datagouv patch) record id format: `urn:iso19139:parent:<record uuid>`
+ISO19139_PARENT_PREFIX = "urn:iso19139:parent:"
+
+DCAT_EXTRA_IN_SERIES = "inSeries"
+
+
+class InSeriesRelation(Relation[Dataset, Dataset]):
+    """A dataset belongs to one or more series (`dcat:inSeries`)."""
+
+    @property
+    def target_cls(self) -> type[Dataset]:
+        return Dataset
+
+    def match(self, reference: Reference, index: ItemIndex) -> Dataset | None:
+        if reference.identifier and reference.identifier.startswith(ISO19139_PARENT_PREFIX):
+            # The patched SEMIC XSLT references the parent record with a literal
+            # `urn:iso19139:parent:<record uuid>`: resolve it against the parent record id
+            # (`Harvestable.record_id`) only. This is terminal: the URN never falls back to the
+            # generic match.
+            identifier = reference.identifier.removeprefix(ISO19139_PARENT_PREFIX)
+            target = self.lookup(identifier, index.record_ids)
+            if target is None:
+                log.debug(f"Unresolved record reference {reference.identifier}")
+            return target
+        return super().match(reference, index)
+
+    def apply(self, source: Dataset, targets: Sequence[Dataset]) -> bool:
+        ids = [str(target.id) for target in targets]
+        current_ids = get_dcat_extra(source, DCAT_EXTRA_IN_SERIES) or []
+        if ids == current_ids:
+            return False
+        if ids:
+            set_dcat_extra(source, DCAT_EXTRA_IN_SERIES, ids)
+        else:
+            unset_dcat_extra(source, DCAT_EXTRA_IN_SERIES)
+        return True
 
 
 def temporal_to_rdf(daterange: DateRange, graph: Graph | None = None) -> RdfResource | None:
@@ -803,22 +847,6 @@ def inspire_category_from_rights(rights: Collection[str]) -> InspireLimitationCa
     return None
 
 
-def set_dcat_extra(obj: Dataset | Resource, property: URIRef | str, value: str | Collection):
-    key = localname(property) if isinstance(property, URIRef) else property
-    if not isinstance(value, str):
-        value = list(value)
-    obj.extras["dcat"] = {
-        **obj.extras.get("dcat", {}),
-        key: value,
-    }
-
-
-def get_dcat_extra(obj: Dataset | Resource, property: URIRef | str) -> str | list | None:
-    key = localname(property) if isinstance(property, URIRef) else property
-    if dcat := obj.extras.get("dcat"):
-        return dcat.get(key)
-
-
 def get_unanimous_dcat_extra(
     resources: list[Resource], property: URIRef | str
 ) -> str | list | None:
@@ -941,7 +969,7 @@ def dataset_from_rdf(
     node: Node | None = None,
     remote_url_prefix: str | None = None,
     dryrun: bool = False,
-):
+) -> tuple[Dataset, Sequence[Relation[Dataset, Any]]]:
     """
     Create or update a dataset from a RDF/DCAT graph
     """
@@ -1071,7 +1099,15 @@ def dataset_from_rdf(
         modified_at, "DCT.modified (dataset)", refuse_future=True
     )
 
-    return dataset
+    dataset.record_id = record_identifier_from_rdf(graph, d)
+
+    relations = []
+    if in_series := references_from_rdf(d, DCAT.inSeries):
+        relations.append(InSeriesRelation(in_series))
+    else:
+        unset_dcat_extra(dataset, DCAT_EXTRA_IN_SERIES)
+
+    return dataset, relations
 
 
 def bbox_to_geojson_multipolygon(bbox_as_str: str) -> dict | None:

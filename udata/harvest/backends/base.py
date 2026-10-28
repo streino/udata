@@ -1,16 +1,18 @@
 import logging
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from itertools import chain
-from typing import Concatenate, ParamSpec, TypeVar
+from typing import Concatenate, Generic, ParamSpec, cast
 from uuid import UUID
 
 import requests
 from bson import ObjectId
 from flask import current_app, g
 from mongoengine.errors import ValidationError as MongoValidationError
+from typing_extensions import TypeVar
 from voluptuous import MultipleInvalid, RequiredFieldInvalid
 
 import udata.uris as uris
@@ -92,7 +94,13 @@ class HarvestFeature(object):
 
 H = TypeVar("H", bound=Harvestable)
 
-ItemProcessorParams = ParamSpec("ItemProcessorParams")
+# `item_processor` result type for a given backend. Either:
+# - item: Harvestable (default)
+# - (item, *other): tuple[Harvestable, ...]
+ProcessorResult = TypeVar("ProcessorResult", default=Harvestable)
+
+# `item_processor` additional params for a given backend.
+ProcessorParams = ParamSpec("ProcessorParams")
 
 
 class StopHarvest(BaseException):
@@ -100,7 +108,7 @@ class StopHarvest(BaseException):
     pass
 
 
-class BaseBackend(ABC):
+class BaseBackend(Generic[ProcessorResult], ABC):
     """
     Base class that wrap children methods to add error management and debug logs.
     Also provides a few helpers needed on all or some backends.
@@ -274,11 +282,8 @@ class BaseBackend(ABC):
             )
 
         finally:
-            try:
+            with self.failsafe("update harvested organizations", job_error=False):
                 self.update_harvested_organizations()
-            except Exception as e:
-                # Unexpected exception (potential udata bug) => Sentry
-                log.exception(e)
 
             self.end_job()
 
@@ -287,10 +292,22 @@ class BaseBackend(ABC):
     def process_item(
         self,
         remote_id: str | None,
-        item_processor: Callable[Concatenate[HarvestItem, ItemProcessorParams], Harvestable],
-        *args: ItemProcessorParams.args,
-        **kwargs: ItemProcessorParams.kwargs,
-    ):
+        item_processor: Callable[Concatenate[HarvestItem, ProcessorParams], ProcessorResult],
+        *args: ProcessorParams.args,
+        **kwargs: ProcessorParams.kwargs,
+    ) -> ProcessorResult | None:
+        """Process a harvested record into an item, validating and saving it unless in dry-run mode.
+
+        `item_processor` returns either the `item` itself (the default) or, for backends that need
+        to carry data alongside the item, a `(item, *other)` tuple (see `ProcessorResult`). In both
+        cases the `item` is what gets saved here.
+
+        The result from `item_processor` is returned only if the whole processing successfully went
+        through. Callers can rely on the returned `item` having been validated and persisted.
+
+        Return the item (or the `(item, *extras)` tuple) on success, or `None` if the record was
+        skipped or failed.
+        """
         if self.has_reached_max_items():
             raise StopHarvest()
 
@@ -308,7 +325,10 @@ class BaseBackend(ABC):
             if not remote_id:
                 raise HarvestSkipException("missing identifier")
 
-            item = item_processor(harvest_item, *args, **kwargs)
+            result = item_processor(harvest_item, *args, **kwargs)
+            # A MongoEngine document is iterable over its field names, so an explicit `isinstance`
+            # test is required to tell a tuple apart from a plain item.
+            item = cast(Harvestable, result[0] if isinstance(result, tuple) else result)
             if item.harvest is None:
                 # Ideally we'd want to check that get_item() got called in item_processor, but it
                 # would require instrumenting get_item() just for that purpose. So instead we check
@@ -350,6 +370,8 @@ class BaseBackend(ABC):
                 harvest_item.dataservice = item
 
             harvest_item.status = "done"
+
+            return result
 
         # IMPORTANT:
         # Use `log.exception` only for errors that should be reported in Sentry. See `log`
@@ -577,6 +599,30 @@ class BaseBackend(ABC):
                 errors.append(msg)
             msg = "\n- ".join(["Validation error:"] + errors)
             raise HarvestValidationError(msg)
+
+    @contextmanager
+    def failsafe(self, label: str, *, job_error: bool = True) -> Generator[None]:
+        """Try/except sugar to run a code bloc without disrupting the harvest loop.
+
+        The body always runs, and all exceptions are trapped so they don't interrupt the harvest
+        loop.
+
+        If the body raises, the exception is logged, and (when `job_error` is true) recorded as a
+        `HarvestError`.
+
+        Used in `finally` to ensure all finilizer steps are executed even when some might raise.
+        """
+        try:
+            yield
+        except Exception as e:
+            # Unexpected exception (potential udata bug) => Sentry
+            log.exception(f"{label} failed: {safe_unicode(e)}")
+            if job_error:
+                self.job.errors.append(
+                    HarvestError(
+                        message=f"{label}: {safe_unicode(e)}", details=traceback.format_exc()
+                    )
+                )
 
 
 class LogCatcher(logging.Handler):

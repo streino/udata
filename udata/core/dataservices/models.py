@@ -29,7 +29,7 @@ from udata.core.dataset.api_fields import dataset_ref_fields
 from udata.core.dataset.models import Dataset
 from udata.core.discussions.models import Discussion
 from udata.core.followers.models import Follow
-from udata.core.harvest import HarvestMetadata
+from udata.core.harvest import Harvestable, HarvestMetadata
 from udata.core.linkable import Linkable
 from udata.core.metrics.helpers import get_stock_metrics
 from udata.core.metrics.models import WithMetrics
@@ -178,8 +178,9 @@ class Dataservice(
     WithMetrics,
     WithAccessType,
     DataserviceBadgeMixin,
-    Linkable,
+    Harvestable,
     Owned,
+    Linkable,
     Document[DataserviceQuerySet],
 ):
     meta = {
@@ -396,10 +397,6 @@ class Dataservice(
             Reuse.objects(dataservices=self).filter(private__ne=True, deleted=None).count()
         )
         self.save(signal_kwargs={"ignores": ["post_save"]})
-
-    def set_harvested(self):
-        if not self.harvest:
-            self.harvest = HarvestDataserviceMetadata()
 
 
 post_save.connect(Dataservice.post_save, sender=Dataservice)

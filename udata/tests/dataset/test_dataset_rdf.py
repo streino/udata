@@ -3,6 +3,7 @@ from xml.etree.ElementTree import XML
 
 import pytest
 import requests
+from bson import ObjectId
 from flask import url_for
 from rdflib import BNode, Graph, Literal, URIRef
 from rdflib.namespace import FOAF, RDF, RDFS, XSD, Namespace
@@ -24,8 +25,10 @@ from udata.core.dataset.models import (
     SpatialCoverage,
 )
 from udata.core.dataset.rdf import (
+    DCAT_EXTRA_IN_SERIES,
     EUFREQ_TERM_TO_UDATA,
     FREQ_TERM_TO_UDATA,
+    InSeriesRelation,
     access_right_to_rdf,
     access_rights_from_rdf,
     dataset_from_rdf,
@@ -49,6 +52,7 @@ from udata.core.dataset.rdf import (
     temporal_from_rdf,
 )
 from udata.core.organization.factories import OrganizationFactory
+from udata.harvest.relations import ItemIndex, Reference, RelationResolver
 from udata.i18n import gettext as _
 from udata.mongo.datetime_fields import DateRange
 from udata.rdf import (
@@ -71,7 +75,7 @@ from udata.rdf import (
     TAG_TO_EU_HVD_CATEGORIES,
     VCARD,
     default_lang_value,
-    primary_topic_identifier_from_rdf,
+    record_identifier_from_rdf,
     remote_url_from_rdf,
     slugify_tag,
 )
@@ -432,7 +436,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((node, RDF.type, DCAT.Dataset))
         g.add((node, DCT.title, Literal(title)))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -448,7 +452,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((node, RDF.type, DCAT.Dataset))
         g.add((node, DCT.title, Literal(new_title)))
 
-        dataset = dataset_from_rdf(g, dataset=original)
+        dataset, _ = dataset_from_rdf(g, dataset=original)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -468,7 +472,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
             g.add((other, RDF.type, DCAT.Dataset))
             g.add((other, DCT.title, Literal(faker.sentence())))
 
-        dataset = dataset_from_rdf(g, node=node)
+        dataset, _ = dataset_from_rdf(g, node=node)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -489,7 +493,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
             g.add((other, RDF.type, DCAT.Dataset))
             g.add((other, DCT.title, Literal(faker.sentence())))
 
-        dataset = dataset_from_rdf(g, dataset=original, node=node)
+        dataset, _ = dataset_from_rdf(g, dataset=original, node=node)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -540,7 +544,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         d = DatasetFactory.build()
         d.organization = OrganizationFactory(name="organization")
 
-        dataset = dataset_from_rdf(g, d)
+        dataset, _ = dataset_from_rdf(g, d)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -571,7 +575,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((node, DCT.title, Literal(faker.sentence())))
         g.add((node, DCT.description, Literal("<div>a description</div>")))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -589,7 +593,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((node, DCT.description, Literal("<div>a description</div>")))
         g.add((node, DCT.modified, Literal(modified)))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -605,7 +609,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((node, DCT.title, Literal(faker.sentence())))
         g.add((node, DCT.modified, Literal("{{modified:toISO}}")))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -624,7 +628,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         for theme in themes:
             g.add((node, DCAT.theme, Literal(theme)))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -640,7 +644,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((node, DCAT.keyword, Literal("literal-tag")))
         g.add((node, DCAT.keyword, URIRef("http://example.org/keyword/uriref-tag")))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -663,7 +667,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         for keyword in ["valid-tag", "&", "df", "waytoolongkeyword"]:
             g.add((node, DCAT.keyword, Literal(keyword)))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()  # Must not raise.
 
         assert set(dataset.tags) == {"valid-tag", "waytoolong"}
@@ -990,7 +994,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
             g.set((rnode, DCAT.downloadURL, URIRef(faker.uri())))
             g.add((node, DCAT.distribution, rnode))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -1008,7 +1012,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.set((rnode, DCAT.downloadURL, URIRef(faker.uri())))
         g.add((node, DCAT.distributions, rnode))  # use plural name
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -1026,7 +1030,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.set((rnode, DCAT.downloadURL, Literal(faker.uri())))
         g.add((node, DCAT.distribution, rnode))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset, Dataset)
@@ -1095,7 +1099,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.set((rnode, DCT.license, URIRef(license.url)))
         g.add((node, DCAT.distribution, rnode))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset.license, License)
@@ -1114,7 +1118,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.set((rnode, DCT.rights, URIRef(license.url)))
         g.add((node, DCAT.distribution, rnode))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
 
         assert isinstance(dataset.license, License)
         assert dataset.license == license
@@ -1132,7 +1136,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.set((rnode, DCT.license, Literal(license.url)))
         g.add((node, DCAT.distribution, rnode))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset.license, License)
@@ -1151,7 +1155,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.set((rnode, DCT.license, Literal(license.title)))
         g.add((node, DCAT.distribution, rnode))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
 
         assert isinstance(dataset.license, License)
@@ -1602,7 +1606,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((rnode, DCAT.downloadURL, URIRef(faker.uri())))
         g.add((node, DCAT.distribution, rnode))
 
-        dataset = dataset_from_rdf(g)
+        dataset, _ = dataset_from_rdf(g)
         dataset.validate()
         assert dataset.title == title
         assert dataset.description == description
@@ -1611,8 +1615,8 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         assert resource.title == title
         assert resource.description == description
 
-    def test_primary_topic_identifier_from_rdf_outer(self):
-        """Check that a CatalogRecord node that is primaryTopic of a dataset is found and parsed"""
+    def test_record_identifier_from_rdf_outer(self):
+        """Check that a `CatalogRecord` whose `primaryTopic` is the dataset is found and parsed."""
         node = BNode()
         g = Graph()
 
@@ -1624,11 +1628,10 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
         g.add((primary_topic_node, DCT.identifier, Literal("primary-topic-identifier")))
         g.add((primary_topic_node, FOAF.primaryTopic, node))
 
-        pti = primary_topic_identifier_from_rdf(g, g.resource(node))
-        assert pti == Literal("primary-topic-identifier")
+        assert record_identifier_from_rdf(g, g.resource(node)) == "primary-topic-identifier"
 
-    def test_primary_topic_identifier_from_rdf_inner(self):
-        """Check that a nested isPrimaryTopicOf of a dataset is found and parsed"""
+    def test_record_identifier_from_rdf_inner(self):
+        """Check that a nested `isPrimaryTopicOf` of a `Dataset` is found and parsed."""
         node = BNode()
         g = Graph()
 
@@ -1641,8 +1644,7 @@ class RdfToDatasetTest(PytestOnlyDBTestCase):
 
         g.add((node, FOAF.isPrimaryTopicOf, primary_topic_node))
 
-        pti = primary_topic_identifier_from_rdf(g, g.resource(node))
-        assert pti == Literal("primary-topic-identifier")
+        assert record_identifier_from_rdf(g, g.resource(node)) == "primary-topic-identifier"
 
     def test_remote_url_from_rdf_urnuuid_iso191153(self):
         """
@@ -2350,6 +2352,234 @@ class RdfToDatasetUtilsTest(PytestOnlyDBTestCase):
         resource = graph.resource(distribution)
         format = format_from_rdf(resource)
         assert format == expected_format
+
+
+class InSeriesRelationTest:
+    """Unit tests of `InSeriesRelation`: matching the ISO-19139 parent record URNs (see
+    `ISO19139_PARENT_PREFIX`, emitted as literal identifiers by the patched XSLT), and the
+    "reflect the source" apply semantics."""
+
+    def match(self, *items: Dataset, reference: Reference) -> Dataset | None:
+        return InSeriesRelation((reference,)).match(reference, ItemIndex(items))
+
+    def apply(self, owner, references, *targets):
+        return InSeriesRelation(tuple(Reference(identifier=r) for r in references)).apply(
+            owner, targets
+        )
+
+    def test_record_urn_resolves_on_record_id_only(self):
+        parent = DatasetFactory.build(harvest={"remote_id": "series"}, record_id="12345")
+        decoy = DatasetFactory.build(
+            harvest={"remote_id": "12345"}
+        )  # same value, but a *resource* remote id
+
+        assert (
+            self.match(parent, decoy, reference=Reference(identifier="urn:iso19139:parent:12345"))
+            is parent
+        )
+        assert (
+            self.match(parent, decoy, reference=Reference(identifier="urn:iso19139:parent:unknown"))
+            is None
+        )
+
+    def test_record_urn_keeps_colons_of_the_record_id(self):
+        parent = DatasetFactory.build(
+            harvest={"remote_id": "series"}, record_id="urn:geo2france:abc"
+        )
+
+        assert (
+            self.match(
+                parent, reference=Reference(identifier="urn:iso19139:parent:urn:geo2france:abc")
+            )
+            is parent
+        )
+
+    def test_record_urn_with_codespace_is_not_normalized_like_record_ids(self):
+        """Documents the known asymmetry of the record lookup (see `ISO19139_PARENT_PREFIX`),
+        it is the current behavior, not a requirement.
+
+        Record ids are stored normalized (`urn:uuid:` codeSpace stripped for ISO-19115-3), but
+        the reference side is matched as is: a URN that kept the codeSpace doesn't resolve.
+        """
+        parent = DatasetFactory.build(harvest={"remote_id": "series"}, record_id="abc")
+
+        assert (
+            self.match(parent, reference=Reference(identifier="urn:iso19139:parent:abc")) is parent
+        )
+        assert (
+            self.match(parent, reference=Reference(identifier="urn:iso19139:parent:urn:uuid:abc"))
+            is None
+        )
+
+    def test_record_urn_is_terminal(self):
+        """A record reference never falls back to the generic exact match."""
+        dataset = DatasetFactory.build(harvest={"remote_id": "urn:iso19139:parent:12345"})
+
+        assert (
+            self.match(dataset, reference=Reference(identifier="urn:iso19139:parent:12345")) is None
+        )
+
+    def test_urn_in_the_uri_address_is_not_intercepted(self):
+        """Only identifier references resolve against `record_id`: a URN carried as a node URI
+        goes through the generic match."""
+        parent = DatasetFactory.build(harvest={"remote_id": "series"}, record_id="abc")
+
+        assert self.match(parent, reference=Reference(uri="urn:iso19139:parent:abc")) is None
+
+    def test_never_falls_back_to_suffix(self):
+        """The suffix fallback is a `ServesDatasetRelation` policy."""
+        dataset = DatasetFactory.build(harvest={"remote_id": "http://data.test.org/1"})
+
+        assert self.match(dataset, reference=Reference(identifier="1")) is None
+
+    def test_record_urn_resolution(self):
+        """End-to-end through the resolver: `register` builds the `record_ids` index, `match`
+        resolves the URN against the parent record id, `apply` records the parent's datagouv
+        id (not the raw UUID)."""
+        owner = DatasetFactory.build(harvest={"remote_id": "child"})
+        parent = DatasetFactory.build(harvest={"remote_id": "series"}, record_id="abc")
+        resolver = RelationResolver()
+        resolver.register(
+            owner, [InSeriesRelation((Reference(identifier="urn:iso19139:parent:abc"),))]
+        )
+        resolver.register(parent, [])
+
+        assert resolver.resolve() == [owner]
+        assert owner.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(parent.id)]
+
+    def test_sets_in_series(self):
+        child, parent = DatasetFactory.build(id=ObjectId()), DatasetFactory.build(id=ObjectId())
+
+        assert self.apply(child, ["p"], parent) is True
+        assert child.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(parent.id)]
+
+    def test_unchanged(self):
+        child, parent = DatasetFactory.build(id=ObjectId()), DatasetFactory.build(id=ObjectId())
+        self.apply(child, ["p"], parent)
+
+        assert self.apply(child, ["p"], parent) is False
+
+    def test_all_parents_are_kept_in_order(self):
+        child, p1, p2 = (
+            DatasetFactory.build(id=ObjectId()),
+            DatasetFactory.build(id=ObjectId()),
+            DatasetFactory.build(id=ObjectId()),
+        )
+
+        assert self.apply(child, ["p1", "p2"], p1, p2) is True
+        assert child.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(p1.id), str(p2.id)]
+
+    def test_replaces_the_previous_parents(self):
+        child, old, new = (
+            DatasetFactory.build(id=ObjectId()),
+            DatasetFactory.build(id=ObjectId()),
+            DatasetFactory.build(id=ObjectId()),
+        )
+        self.apply(child, ["old"], old)
+
+        assert self.apply(child, ["new"], new) is True
+        assert child.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(new.id)]
+
+    def test_declared_but_unresolved_is_removed(self):
+        """Reflect the source: a parent declared but not resolved in the run is dropped, as the
+        run can't tell a stale parent from an unresolved one."""
+        child, parent = DatasetFactory.build(id=ObjectId()), DatasetFactory.build(id=ObjectId())
+        self.apply(child, ["p"], parent)
+
+        assert self.apply(child, ["p"]) is True
+        assert "dcat" not in child.extras
+
+    def test_no_reference_and_no_target_is_a_noop(self):
+        child = DatasetFactory.build(id=ObjectId())
+
+        assert self.apply(child, []) is False
+        assert "dcat" not in child.extras
+
+    def test_no_reference_with_a_previous_value_removes_it(self):
+        child, parent = DatasetFactory.build(id=ObjectId()), DatasetFactory.build(id=ObjectId())
+        self.apply(child, ["p"], parent)
+
+        assert self.apply(child, []) is True
+        assert "dcat" not in child.extras
+
+    def test_partially_resolved_replaces_the_value(self):
+        """Of two declared parents, only one resolved: the value is replaced with the resolved
+        one only."""
+        child, p1 = DatasetFactory.build(id=ObjectId()), DatasetFactory.build(id=ObjectId())
+
+        assert self.apply(child, ["p1", "p2"], p1) is True
+        assert child.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(p1.id)]
+
+
+class DatasetFromRdfRunStateTest(PytestOnlyDBTestCase):
+    """`dataset_from_rdf` is the single RDF conversion point: besides populating the dataset, it
+    records what a harvest needs to link it with the other items of the run: `record_id` and the
+    `Relation`s it returns."""
+
+    node = URIRef("http://ex/child")
+
+    def graph(self) -> Graph:
+        graph = Graph()
+        graph.add((self.node, RDF.type, DCAT.Dataset))
+        graph.add((self.node, DCT.title, Literal("Child")))
+        return graph
+
+    def test_no_reference_and_no_record(self):
+        dataset, relations = dataset_from_rdf(self.graph(), Dataset(), self.node)
+
+        assert dataset.record_id is None
+        assert relations == []
+
+    def test_in_series_references_are_recorded_not_resolved(self):
+        graph = self.graph()
+        graph.add((self.node, DCAT.inSeries, URIRef("http://ex/parent")))
+
+        dataset, (relation,) = dataset_from_rdf(graph, Dataset(), self.node)
+
+        assert isinstance(relation, InSeriesRelation)
+        assert relation.references == [Reference(uri="http://ex/parent")]
+        assert "dcat" not in dataset.extras
+
+    def test_record_id_is_recorded(self):
+        graph = self.graph()
+        record = BNode()
+        graph.add((record, RDF.type, DCAT.CatalogRecord))
+        graph.add((record, DCT.identifier, Literal("some-id")))
+        graph.add((record, FOAF.primaryTopic, self.node))
+
+        dataset, _ = dataset_from_rdf(graph, Dataset(), self.node)
+
+        assert dataset.record_id == "some-id"
+
+    def test_run_state_is_not_persisted(self):
+        dataset, _ = dataset_from_rdf(self.graph(), Dataset(), self.node)
+
+        assert "record_id" not in set(dataset.to_mongo())
+
+    def test_no_longer_declared_series_is_forgotten_at_conversion(self):
+        """A previously recorded parent is cleared as soon as the source declares no series,
+        while the other `dcat` extras are kept."""
+        dataset = Dataset()
+        set_dcat_extra(dataset, DCAT_EXTRA_IN_SERIES, ["parent"])
+        set_dcat_extra(dataset, "frequency", "unknown")
+
+        dataset, relations = dataset_from_rdf(self.graph(), dataset, self.node)
+
+        assert dataset.extras["dcat"] == {"frequency": "unknown"}
+        assert relations == []
+
+    def test_declared_series_is_not_cleared_at_conversion(self):
+        """A declared (even unresolvable) parent is left untouched at conversion time: there must
+        be no void between conversion and relation resolution."""
+        dataset = Dataset()
+        set_dcat_extra(dataset, DCAT_EXTRA_IN_SERIES, ["parent"])
+        graph = self.graph()
+        graph.add((self.node, DCAT.inSeries, URIRef("http://ex/parent")))
+
+        dataset, (relation,) = dataset_from_rdf(graph, dataset, self.node)
+
+        assert dataset.extras["dcat"][DCAT_EXTRA_IN_SERIES] == ["parent"]
+        assert relation.references
 
 
 class DcatHelpersTest:

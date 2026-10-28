@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from datetime import date
 
 import pytest
+from bson import ObjectId
 from flask import current_app, url_for
 
 from udata.core.access_type.constants import AccessType, InspireLimitationCategory
@@ -11,12 +12,16 @@ from udata.core.dataservices.factories import DataserviceFactory
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.constants import UpdateFrequency
 from udata.core.dataset.factories import DatasetFactory, LicenseFactory, ResourceSchemaMockData
+from udata.core.dataset.rdf import DCAT_EXTRA_IN_SERIES, InSeriesRelation
 from udata.core.organization.factories import OrganizationFactory
 from udata.harvest.backends import get_backend
-from udata.harvest.backends.dcat import CswDcatBackend
-from udata.harvest.models import HarvestJob
+from udata.harvest.backends.dcat import CswDcatBackend, DcatBackend
+from udata.harvest.exceptions import HarvestSkipException
+from udata.harvest.models import HarvestJob, HarvestSource
+from udata.harvest.relations import Reference
 from udata.models import Dataset
 from udata.storage.s3 import get_from_json
+from udata.tests import PytestOnlyTestCase
 from udata.tests.api import PytestOnlyAPITestCase, PytestOnlyDBTestCase
 from udata.tests.helpers import argvalues, assert200
 
@@ -208,10 +213,10 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         )
 
     def test_harvest_dataservices_serving_datasets_referenced_by_uri(self, rmock):
-        """A `dcat:servesDataset` node can reference a dataset by URI only, without any
-        `dcterms:identifier` (this is what GeoDCAT-AP emits). The dataset is then harvested
-        from another page, and only its URI can link the two."""
-
+        """A `dcat:servesDataset` can reference a dataset by URI only, without any
+        `dcterms:identifier` (this is what GeoDCAT-AP emits). The dataset is harvested from a later
+        record and attached through the relation resolver.
+        """
         url = mock_dcat_pagination(rmock, "catalog.xml", "serves-dataset-by-uri-{page}.xml")
         source = HarvestSourceFactory(backend="dcat", url=url, organization=OrganizationFactory())
 
@@ -224,6 +229,21 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         # The dataset harvested from the first page is attached, the one outside of the
         # catalog is simply ignored.
         assert [dataset.title for dataset in dataservice.datasets] == ["Dataset 1"]
+
+    def test_harvest_dataservices_serving_datasets_referenced_by_identifier(self, rmock):
+        """A `dcat:servesDataset` can reference a served dataset by its `dcterms:identifier`. The
+        dataset is harvested from a later record and attached through the relation resolver.
+        """
+        url = mock_dcat(rmock, "serves-dataset.xml")
+        source = HarvestSourceFactory(backend="dcat", url=url, organization=OrganizationFactory())
+
+        actions.run(source)
+
+        source.reload()
+        assert [item.status for item in source.get_last_job().items] == ["done", "done"]
+
+        dataservice = Dataservice.objects.first()
+        assert [dataset.harvest.remote_id for dataset in dataservice.datasets] == ["1"]
 
     def test_harvest_datasetseries(self, rmock):
         rmock.get("https://example.com/schemas", json=ResourceSchemaMockData.get_mock_data())
@@ -243,6 +263,173 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         # the node is typed both Dataset and DatasetSeries, but must only be harvested once
         source.reload()
         assert len(source.get_last_job().items) == 1
+
+    def test_harvest_relation_in_series(self, rmock):
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+
+        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
+        assert set(datasets) == {"series", "child"}
+
+        parent = datasets["series"]
+        child = datasets["child"]
+        assert child.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(parent.id)]
+
+    def test_harvest_relation_in_series_multiple(self, rmock):
+        """All the parents are recorded, in the source's declaration order: the value reflects
+        the source (the parents may be harvested before or after their child)."""
+
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series-multiple.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+
+        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
+        assert set(datasets) == {"series-a", "series-b", "child"}
+        # The fixture declares series-b before series-a: no sorting, the source order wins.
+        assert datasets["child"].extras["dcat"][DCAT_EXTRA_IN_SERIES] == [
+            str(datasets["series-b"].id),
+            str(datasets["series-a"].id),
+        ]
+
+    @pytest.mark.options(HARVEST_MAX_ITEMS=2)
+    def test_harvest_relation_in_series_max_items(self, rmock):
+        """Only two of the three child datasets are harvested."""
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series-multiple.xml"),
+            organization=OrganizationFactory(),
+        )
+
+        actions.run(source)
+
+        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
+        assert len(datasets) == 2
+        if "child" in datasets:
+            parents = sorted(str(d.id) for rid, d in datasets.items() if rid != "child")
+            assert datasets["child"].extras["dcat"][DCAT_EXTRA_IN_SERIES] == parents
+        else:
+            # child wasn't harvested, so none of the harvested parents carry the relation.
+            for dataset in datasets.values():
+                assert DCAT_EXTRA_IN_SERIES not in dataset.extras.get("dcat", {})
+
+    def test_harvest_relation_in_series_child_declared_before_its_parent(self, rmock):
+        """A forward reference: the parent is only harvested after the child."""
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series-child-first.xml"),
+            organization=OrganizationFactory(),
+        )
+
+        actions.run(source)
+
+        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
+        assert set(datasets) == {"series", "child"}
+        assert datasets["child"].extras["dcat"][DCAT_EXTRA_IN_SERIES] == [
+            str(datasets["series"].id)
+        ]
+
+    def test_harvest_relation_in_series_preview(self, rmock):
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series.xml"),
+            organization=OrganizationFactory(),
+        )
+
+        job = actions.preview(source)
+
+        assert Dataset.objects.count() == 0
+        datasets = {item.remote_id: item.dataset for item in job.items}
+        assert datasets["child"].extras["dcat"][DCAT_EXTRA_IN_SERIES] == [
+            str(datasets["series"].id)
+        ]
+
+    def test_harvest_relation_in_series_unresolved(self, rmock):
+        """When the `dcat:inSeries` parent is not part of the harvest, nothing is recorded."""
+
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series-unresolved.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+
+        child = Dataset.objects(harvest__remote_id="child").first()
+        assert child is not None
+        assert "dcat" not in child.extras
+
+    def test_harvest_relation_in_series_urn(self, rmock):
+        """A `dcat:inSeries` referencing the parent by a `urn:iso19139:parent:<uuid>` URN must be
+        resolved against the parent record UUID (run-scoped, not persisted on the model)."""
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series-urn.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+
+        datasets = {d.harvest.remote_id: d for d in Dataset.objects}
+        assert set(datasets) == {"series", "child"}
+
+        parent = datasets["series"]
+        child = datasets["child"]
+        # The resolver resolves the URN via the parent record UUID and records the parent's
+        # datagouv id (not the raw UUID).
+        assert child.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(parent.id)]
+
+    def test_harvest_relation_in_series_no_change(self, rmock, mocker):
+        """Relations are persisted only when they change: a second run over the same source saves
+        each harvested item once (main `process_item` save), but no more (no `resolve` save).
+        """
+        source = HarvestSourceFactory(
+            backend="dcat",
+            url=mock_dcat(rmock, "in-series.xml"),
+            organization=OrganizationFactory(),
+        )
+        actions.run(source)
+        child = Dataset.objects(harvest__remote_id="child").first()
+        in_series = child.extras["dcat"][DCAT_EXTRA_IN_SERIES]
+
+        save = mocker.spy(Dataset, "save")
+        actions.run(source)
+
+        assert save.call_count == 2  # series + child
+        child.reload()
+        assert child.extras["dcat"][DCAT_EXTRA_IN_SERIES] == in_series
+
+    def test_harvest_relation_in_series_deleted(self, rmock, mocker):
+        """Clear relation when it is removed from the source."""
+        # The detached catalog is served at the very same URL as the first one: the second run
+        # must re-fetch the same endpoint and see that `dcat:inSeries` is gone.
+        catalog = {"name": "in-series.xml"}
+
+        def serve(request, context):
+            with open(os.path.join(DCAT_FILES_DIR, catalog["name"])) as f:
+                return f.read()
+
+        url = TEST_URL_PATTERN.format(path="in-series.xml", domain=TEST_DOMAIN)
+        rmock.register_uri("GET", url, text=serve)
+        source = HarvestSourceFactory(backend="dcat", url=url, organization=OrganizationFactory())
+
+        actions.run(source)
+        saved_child = Dataset.objects(harvest__remote_id="child").first()
+        assert DCAT_EXTRA_IN_SERIES in saved_child.extras["dcat"]
+
+        save = mocker.spy(Dataset, "save")
+        catalog["name"] = "in-series-detached.xml"
+        actions.run(source)
+
+        child = Dataset.objects(harvest__remote_id="child").first()
+        assert "dcat" not in child.extras
+        # The stale parent is dropped while converting the child (no dcat:inSeries in the source),
+        # not by the relation resolution: each item is saved once, none is re-saved as an owner.
+        assert save.call_count == 2  # series + child
 
     def test_harvest_dataservices_keep_attached_associated_datasets(self, rmock):
         """It should update the existing list of dataservice.datasets and not overwrite existing ones"""
@@ -1066,6 +1253,116 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         # A preview must not persist anything
         assert Dataset.objects.count() == 0
         assert Dataservice.objects.count() == 0
+
+
+class DcatBackendRelationsTest(PytestOnlyTestCase):
+    """Relation-specific tests."""
+
+    @pytest.fixture(autouse=True)
+    def _app_context(self, app):
+        # `BaseBackend.__init__` reads the app config.
+        with app.app_context():
+            yield
+
+    def backend(self, dryrun: bool = False) -> DcatBackend:
+        backend = DcatBackend(HarvestSource(name="source", url="http://x"), dryrun=dryrun)
+        backend.job = HarvestJob()
+        backend.__dict__["format"] = "xml"  # cached property: don't query the source
+        return backend
+
+    def register(self, backend):
+        parent = DatasetFactory.build(harvest={"remote_id": "parent"}, id=ObjectId())
+        relations = [InSeriesRelation((Reference(identifier="parent"),))]
+        owners = [
+            DatasetFactory.build(harvest={"remote_id": remote_id}, id=ObjectId())
+            for remote_id in ("a", "b")
+        ]
+        backend.relations.register(parent, [])
+        for owner in owners:
+            backend.relations.register(owner, relations)
+        return parent, *owners
+
+    def test_only_saved_items_are_registered(self, mocker):
+        """`DcatBackend.process_item` registers the items the base saved: skipped and failed
+        items are neither owners nor targets of the relation resolution."""
+        backend = self.backend(dryrun=True)
+        backend.remote_ids = set()
+        # The dry-run validates the item: the source URL ends up in its metadata, so it must
+        # pass the URL validation (unlike the `http://x` dummy used by the other tests).
+        backend.source.url = "http://example.com/catalog"
+        register = mocker.spy(backend.relations, "register")
+        saved = DatasetFactory.build(harvest={"remote_id": "saved"})
+        saved.slug = "saved"
+        relations = [InSeriesRelation((Reference(identifier="parent"),))]
+
+        def item_processor(harvest_item, **kwargs):
+            if harvest_item.remote_id == "skipped":
+                raise HarvestSkipException("skipped")
+            return saved, relations
+
+        mocker.patch.object(backend, "item_processor", side_effect=item_processor)
+
+        backend.process_item("saved", backend.item_processor)
+        backend.process_item("skipped", backend.item_processor)
+
+        register.assert_called_once_with(saved, relations)
+
+    def test_failure_to_save_one_owner_doesnt_prevent_the_others(self):
+        backend = self.backend()
+        _, a, b = self.register(backend)
+        saved = []
+
+        def fail(*args, **kwargs):
+            raise Exception("save-failed")
+
+        a.save = fail
+        b.save = lambda *args, **kwargs: saved.append("b")
+
+        backend.resolve_relations()
+
+        assert saved == ["b"]
+        assert [e.message for e in backend.job.errors] == ["save relations of a: save-failed"]
+
+    def test_dryrun_applies_relations_without_saving(self):
+        backend = self.backend(dryrun=True)
+        parent, a, b = self.register(backend)
+
+        def fail(*args, **kwargs):
+            raise AssertionError("saved")
+
+        a.save = b.save = fail
+
+        backend.resolve_relations()
+
+        assert a.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(parent.id)]
+        assert backend.job.errors == []
+
+    def test_relations_are_resolved_even_if_the_walk_fails(self, mocker):
+        backend = self.backend()
+        parent = DatasetFactory.build(harvest={"remote_id": "parent"}, id=ObjectId())
+        a = DatasetFactory.build(harvest={"remote_id": "a"})
+        backend.relations.register(parent, [])
+        backend.relations.register(a, [InSeriesRelation((Reference(identifier="parent"),))])
+        a.save = mocker.Mock()
+        backend.walk_paginated_graph = mocker.Mock(side_effect=Exception("walk-failed"))
+        store_graphs = mocker.patch.object(backend, "store_graphs")
+
+        with pytest.raises(Exception, match="walk-failed"):
+            backend.inner_harvest()
+
+        a.save.assert_called_once()
+        store_graphs.assert_called_once()
+
+    def test_resolution_failure_doesnt_prevent_storing_graphs(self, mocker):
+        backend = self.backend()
+        backend.walk_paginated_graph = mocker.Mock(return_value=[])
+        mocker.patch.object(backend.relations, "resolve", side_effect=Exception("resolve-failed"))
+        store_graphs = mocker.patch.object(backend, "store_graphs")
+
+        backend.inner_harvest()
+
+        store_graphs.assert_called_once()
+        assert [e.message for e in backend.job.errors] == ["resolve relations: resolve-failed"]
 
 
 @pytest.mark.options(HARVESTER_BACKENDS=["csw*"])
