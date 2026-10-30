@@ -66,7 +66,7 @@ class MockRecordError(MockError):
 MockItem = Harvestable | MockHarvestError | MockRecordError
 
 
-class MockBackend(BaseBackend[Harvestable]):
+class MockBackend(BaseBackend[Harvestable, [MockItem]]):
     """Simulates a harvest feed from a list of MockItem.
 
     A MockItem can either be a:
@@ -106,16 +106,15 @@ class MockBackend(BaseBackend[Harvestable]):
 
     @override
     def harvest_loop(self):
-        for i, mock_item in enumerate(self.mock_items):
+        for mock_item in self.mock_items:
             if isinstance(mock_item, MockHarvestError):
                 raise mock_item.exception
             remote_id = getattr(mock_item, "remote_id", None)
             self.process_item(remote_id, mock_item)
 
     @override
-    def parse_item(
-        self, harvest_item: HarvestItem, mock_item: Harvestable | MockRecordError
-    ) -> Harvestable:
+    def parse_item(self, harvest_item: HarvestItem, mock_item: MockItem) -> Harvestable:
+        assert not isinstance(mock_item, MockHarvestError)
         if isinstance(mock_item, MockRecordError):
             raise mock_item.exception
         item = self.get_item(harvest_item.remote_id, type(mock_item))

@@ -2,8 +2,9 @@ import logging
 import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import date
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Generic, Protocol
 
 from flask import current_app
 from rdflib import Graph, Node
@@ -82,7 +83,6 @@ def remote_id(node: Node, graph: Graph) -> str | None:
     return None
 
 
-# `process_item.from_rdf` type signature.
 class FromRdf(Protocol[H]):
     def __call__(
         self,
@@ -96,7 +96,22 @@ class FromRdf(Protocol[H]):
     ) -> tuple[H, Sequence[Relation[H, Any]]]: ...
 
 
-class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]]):
+@dataclass(frozen=True)
+class Kind(Generic[H]):
+    model: type[H]
+    from_rdf: FromRdf[H]
+
+
+DATASET = Kind(Dataset, dataset_from_rdf)
+DATASERVICE = Kind(Dataservice, dataservice_from_rdf)
+
+
+class DcatBackend(
+    BaseBackend[
+        tuple[Harvestable, Sequence[Relation[Any, Any]]],
+        [Node, Graph, int, Kind[Any]],
+    ]
+):
     name = "dcat"
     display_name = "DCAT"
 
@@ -167,20 +182,18 @@ class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]])
         for node in self.list_datasets(graph):
             self.process_item(
                 remote_id(node, graph),
-                node=node,
-                graph=graph,
-                page_number=page_number,
-                model=Dataset,
-                from_rdf=dataset_from_rdf,
+                node,
+                graph,
+                page_number,
+                DATASET,
             )
         for node in self.list_dataservices(graph):
             self.process_item(
                 remote_id(node, graph),
-                node=node,
-                graph=graph,
-                page_number=page_number,
-                model=Dataservice,
-                from_rdf=dataservice_from_rdf,
+                node,
+                graph,
+                page_number,
+                DATASERVICE,
             )
 
     def list_datasets(self, graph: Graph) -> Iterator[Node]:
@@ -228,7 +241,6 @@ class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]])
             predicates[0] == DCAT.servesDataset or predicates[0] == DCT.hasPart
         )
 
-    # FIXME: type-safe args between process_item and parse_item?
     @override
     def parse_item(
         self,
@@ -236,15 +248,15 @@ class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]])
         node: Node,
         graph: Graph,
         page_number: int,
-        model: type[H],
-        from_rdf: FromRdf[H],
+        kind: Kind[H],
     ) -> tuple[H, Sequence[Relation[H, Any]]]:
-        """Get-or-create an item by remote ID and update it from its RDF `node`."""
         harvest_item.kwargs["page_number"] = page_number
         remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
 
-        item = self.get_item(harvest_item.remote_id, model)
-        return from_rdf(graph, item, node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun)
+        item = self.get_item(harvest_item.remote_id, kind.model)
+        return kind.from_rdf(
+            graph, item, node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun
+        )
 
     @override
     def process_item_done(

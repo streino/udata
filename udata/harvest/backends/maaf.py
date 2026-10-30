@@ -141,7 +141,7 @@ def dictize(element):
     return element.tag, OrderedDict(extract(element)) or element.text
 
 
-class MaafBackend(BaseBackend[Dataset]):
+class MaafBackend(BaseBackend[Dataset, []]):
     name = "maaf"
     display_name = "MAAF"
     verify_ssl = False

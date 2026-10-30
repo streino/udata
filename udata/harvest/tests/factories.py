@@ -44,7 +44,7 @@ mock_process = ns.signal("backend:process")
 DEFAULT_COUNT = 3
 
 
-class FactoryBackend(BaseBackend[Dataset]):
+class FactoryBackend(BaseBackend[Dataset, []]):
     name = "factory"
     filters = (
         HarvestFilter("Test", "test", int, "An integer"),

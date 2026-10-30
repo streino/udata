@@ -54,7 +54,7 @@ def find_resource(dataset: Dataset, remote_id: str) -> Resource | None:
     return get_by(dataset.resources, id=adopted_id)
 
 
-class CkanBackend(BaseBackend[Dataset]):
+class CkanBackend(BaseBackend[Dataset, []]):
     name = "ckan"
     display_name = "CKAN"
     filters = (

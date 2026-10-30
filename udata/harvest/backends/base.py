@@ -5,7 +5,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from itertools import chain
-from typing import Generic, ParamSpec, cast
+from typing import Any, Generic, ParamSpec, cast
 from uuid import UUID
 
 import requests
@@ -94,13 +94,18 @@ class HarvestFeature(object):
 
 H = TypeVar("H", bound=Harvestable)
 
-# `parse_item` result type for a given backend. Either:
-# - item: Harvestable (default)
-# - (item, *other): tuple[Harvestable, ...]
-ParserResult = TypeVar("ParserResult", default=Harvestable)
-
 # `parse_item` additional params for a given backend.
-ParserParams = ParamSpec("ParserParams")
+ParserParams = ParamSpec(
+    "ParserParams",
+    # default=[],  # TODO[3.13]
+)
+
+# `parse_item` result type for a given backend. Either `item` or `(item, *extra)`
+ParserResult = TypeVar(
+    "ParserResult",
+    bound=Harvestable | tuple[Harvestable, *tuple[Any, ...]],
+    # default=Harvestable,  # TODO: needs ParserParams default
+)
 
 
 class StopHarvest(BaseException):
@@ -108,7 +113,7 @@ class StopHarvest(BaseException):
     pass
 
 
-class BaseBackend(Generic[ParserResult], ABC):
+class BaseBackend(Generic[ParserResult, ParserParams], ABC):
     """
     Base class that wrap children methods to add error management and debug logs.
     Also provides a few helpers needed on all or some backends.
@@ -294,8 +299,8 @@ class BaseBackend(Generic[ParserResult], ABC):
     def process_item(
         self,
         remote_id: str | None,
-        *args,
-        **kwargs,
+        *args: ParserParams.args,
+        **kwargs: ParserParams.kwargs,
     ) -> None:
         """Called by `harvest_loop` on each harvested record.
 
@@ -406,7 +411,12 @@ class BaseBackend(Generic[ParserResult], ABC):
             self.end_process_item(harvest_item, log_catcher.records)
 
     @abstractmethod
-    def parse_item(self, harvest_item: HarvestItem, *args, **kwargs) -> ParserResult:
+    def parse_item(
+        self,
+        harvest_item: HarvestItem,
+        *args: ParserParams.args,
+        **kwargs: ParserParams.kwargs,
+    ) -> ParserResult:
         raise NotImplementedError
 
     def process_item_done(
