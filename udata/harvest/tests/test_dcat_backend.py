@@ -1295,15 +1295,15 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         saved.slug = "saved"
         relations = [InSeriesRelation((Reference(identifier="parent"),))]
 
-        def item_processor(harvest_item, **kwargs):
+        def parse_item(harvest_item, *args, **kwargs):
             if harvest_item.remote_id == "skipped":
                 raise HarvestSkipException("skipped")
             return saved, relations
 
-        mocker.patch.object(backend, "item_processor", side_effect=item_processor)
+        mocker.patch.object(backend, "parse_item", side_effect=parse_item)
 
-        backend.process_item("saved", backend.item_processor)
-        backend.process_item("skipped", backend.item_processor)
+        backend.process_item("saved")
+        backend.process_item("skipped")
 
         register.assert_called_once_with(saved, relations)
 
@@ -1348,7 +1348,7 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         store_graphs = mocker.patch.object(backend, "store_graphs")
 
         with pytest.raises(Exception, match="walk-failed"):
-            backend.inner_harvest()
+            backend.harvest_loop()
 
         a.save.assert_called_once()
         store_graphs.assert_called_once()
@@ -1359,7 +1359,7 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         mocker.patch.object(backend.relations, "resolve", side_effect=Exception("resolve-failed"))
         store_graphs = mocker.patch.object(backend, "store_graphs")
 
-        backend.inner_harvest()
+        backend.harvest_loop()
 
         store_graphs.assert_called_once()
         assert [e.message for e in backend.job.errors] == ["resolve relations: resolve-failed"]

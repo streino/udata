@@ -66,14 +66,14 @@ class MockRecordError(MockError):
 MockItem = Harvestable | MockHarvestError | MockRecordError
 
 
-class MockBackend(BaseBackend):
+class MockBackend(BaseBackend[Harvestable]):
     """Simulates a harvest feed from a list of MockItem.
 
     A MockItem can either be a:
     - Harvestable object: The mock object is used as a fixture for the remote record, setting
-      the harvested item fields from it, simulating what a real `item_processor` would do.
-    - MockRecordError: The mock error is raised in `item_processor`, simulating a processing error.
-    - MockHarvestError: The mock error is raised in `inner_harvest`, simulating an harvesting error.
+      the harvested item fields from it, simulating what a real `parse_item` would do.
+    - MockRecordError: The mock error is raised in `parse_item`, simulating a processing error.
+    - MockHarvestError: The mock error is raised in `parse_teim`, simulating an harvesting error.
 
     Harvestable mock objects can be generated using their mongo factories, using the `remote_id`
     parameter to simulate a remote record id. See HarvestableFactoryMixin for details.
@@ -105,14 +105,15 @@ class MockBackend(BaseBackend):
         self.mock_items = mock_items or []
 
     @override
-    def inner_harvest(self):
+    def harvest_loop(self):
         for i, mock_item in enumerate(self.mock_items):
             if isinstance(mock_item, MockHarvestError):
                 raise mock_item.exception
             remote_id = getattr(mock_item, "remote_id", None)
-            self.process_item(remote_id, self.item_processor, mock_item)
+            self.process_item(remote_id, mock_item)
 
-    def item_processor(
+    @override
+    def parse_item(
         self, harvest_item: HarvestItem, mock_item: Harvestable | MockRecordError
     ) -> Harvestable:
         if isinstance(mock_item, MockRecordError):
@@ -125,12 +126,13 @@ class MockBackend(BaseBackend):
         return item
 
 
-class MockFetchingBackend(BaseBackend):
+class MockFetchingBackend(MockBackend):
     """A backend that really goes over the network, to exercise the HTTP layer."""
 
     name = "mock-fetching-backend"
 
-    def inner_harvest(self):
+    @override
+    def harvest_loop(self):
         self.get(self.source.url).raise_for_status()
 
 
@@ -922,17 +924,11 @@ class BaseBackendTest(PytestOnlyDBTestCase):
 
         try:
             remote_id = getattr(record, "remote_id", None)
-            item = backend.process_item(remote_id, backend.item_processor, record)
+            item = backend.process_item(remote_id, record)
 
             assert len(backend.job.items) == 1
             harvest_item = backend.job.items[0]
             assert isinstance(harvest_item, HarvestItem)
-
-            if record_error:
-                assert item is None
-            else:
-                assert item is not None
-                assert item.harvest.remote_id == remote_id
 
             assert harvest_item.remote_id == remote_id
             assert harvest_item.status == item_status
@@ -1006,38 +1002,11 @@ class BaseBackendTest(PytestOnlyDBTestCase):
         )
         assert dataset.archived_at is not None
 
-        backend.process_item(dataset.harvest.remote_id, backend.item_processor, dataset)
+        backend.process_item(dataset.harvest.remote_id, dataset)
 
         item = backend.job.items[0].dataset
         assert item == dataset
         assert item.archived_at is None
-
-    def test_process_item_tuple_result(self):
-        """When `item_processor` returns a tuple result, `process_item` saves the `item` as usual
-        and returns the entire tuple.
-        """
-        dataset = DatasetFactory.build(remote_id="dataset")
-
-        class TupleBackend(BaseBackend[tuple[Harvestable, str, str]]):
-            def inner_harvest(self):
-                raise NotImplementedError
-
-            def item_processor(self, _: HarvestItem) -> tuple[Harvestable, str, str]:
-                dataset.set_harvested()
-                return dataset, "foo", "bar"
-
-        backend = TupleBackend(HarvestSourceFactory())
-        backend.job = HarvestJob()
-        backend.remote_ids = set()
-
-        result = backend.process_item("dataset", backend.item_processor)
-
-        assert isinstance(result, tuple)
-        item, foo, bar = result
-        assert item is dataset
-        assert item.harvest.remote_id == "dataset"
-        assert foo == "foo"
-        assert bar == "bar"
 
     @pytest.mark.parametrize(
         "owner_field, owner_factory",
@@ -1168,11 +1137,11 @@ class HarvestItemLogsTest(PytestOnlyDBTestCase):
         name = "mock-logging-backend"
         ITEM_LOG_MESSAGE = "Something worth reporting happened while processing this item"
 
-        def item_processor(
+        def parse_item(
             self, harvest_item: HarvestItem, mock_item: Harvestable | MockRecordError
         ) -> Harvestable:
             log.info(self.ITEM_LOG_MESSAGE)
-            return super().item_processor(harvest_item, mock_item)
+            return super().parse_item(harvest_item, mock_item)
 
     def test_logs_emitted_while_processing_are_reported_on_the_item(self):
         backend = HarvestItemLogsTest.MockLoggingBackend(

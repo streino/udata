@@ -1,9 +1,9 @@
 import logging
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Generator, Iterator, Sequence
+from collections.abc import Generator, Iterator, Sequence
 from datetime import date
-from typing import Any, ClassVar, Concatenate, Protocol
+from typing import Any, ClassVar, Protocol
 
 from flask import current_app
 from rdflib import Graph, Node
@@ -34,7 +34,7 @@ from udata.storage.s3 import store_as_json
 from udata.utils import safe_unicode, uniquify
 
 from ..relations import Relation, RelationResolver
-from .base import BaseBackend, H, HarvestExtraConfig, HarvestFeature, ProcessorParams
+from .base import BaseBackend, H, HarvestExtraConfig, HarvestFeature
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def remote_id(node: Node, graph: Graph) -> str | None:
     return None
 
 
-# `item_processor.from_rdf` type signature.
+# `process_item.from_rdf` type signature.
 class FromRdf(Protocol[H]):
     def __call__(
         self,
@@ -106,19 +106,21 @@ class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]])
         self.relations = RelationResolver()
 
     @override
-    def inner_harvest(self):
+    def harvest_loop(self) -> None:
         self.job.data = {"format": self.format}
-        try:
-            for page_graph, page_number in self.walk_paginated_graph(self.source.url):
-                # cache graph first in case processing raises exceptions, so graphs
-                # are always available to store_graphs()
-                self.graphs.append((page_graph, page_number))
-                self.process_page(page_graph, page_number)
-        finally:
-            with self.failsafe("resolve relations"):
-                self.resolve_relations()
-            with self.failsafe("store graphs"):
-                self.store_graphs()
+        for page_graph, page_number in self.walk_paginated_graph(self.source.url):
+            # cache graph first in case processing raises exceptions, so graphs
+            # are always available to store_graphs()
+            self.graphs.append((page_graph, page_number))
+            self.process_page(page_graph, page_number)
+
+    @override
+    def harvest_done(self, status: str) -> None:
+        with self.failsafe("resolve relations"):
+            self.resolve_relations()
+        with self.failsafe("store graphs"):
+            self.store_graphs()
+        super().harvest_done(status)
 
     @cached_property
     def format(self) -> str:
@@ -165,7 +167,6 @@ class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]])
         for node in self.list_datasets(graph):
             self.process_item(
                 remote_id(node, graph),
-                self.item_processor,
                 node=node,
                 graph=graph,
                 page_number=page_number,
@@ -175,7 +176,6 @@ class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]])
         for node in self.list_dataservices(graph):
             self.process_item(
                 remote_id(node, graph),
-                self.item_processor,
                 node=node,
                 graph=graph,
                 page_number=page_number,
@@ -228,34 +228,14 @@ class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]])
             predicates[0] == DCAT.servesDataset or predicates[0] == DCT.hasPart
         )
 
+    # FIXME: type-safe args between process_item and parse_item?
     @override
-    def process_item(
-        self,
-        remote_id: str | None,
-        item_processor: Callable[
-            Concatenate[HarvestItem, ProcessorParams],
-            tuple[Harvestable, Sequence[Relation[Any, Any]]],
-        ],
-        *args: ProcessorParams.args,
-        **kwargs: ProcessorParams.kwargs,
-    ) -> tuple[Harvestable, Sequence[Relation[Any, Any]]] | None:
-        """Process a record into an item, and register its relations for later resolution."""
-        result = super().process_item(remote_id, item_processor, *args, **kwargs)
-        if result is None:
-            return
-
-        item, relations = result
-        self.relations.register(item, relations)
-
-        return result
-
-    def item_processor(
+    def parse_item(
         self,
         harvest_item: HarvestItem,
         node: Node,
         graph: Graph,
         page_number: int,
-        *,
         model: type[H],
         from_rdf: FromRdf[H],
     ) -> tuple[H, Sequence[Relation[H, Any]]]:
@@ -265,6 +245,21 @@ class DcatBackend(BaseBackend[tuple[Harvestable, Sequence[Relation[Any, Any]]]])
 
         item = self.get_item(harvest_item.remote_id, model)
         return from_rdf(graph, item, node, remote_url_prefix=remote_url_prefix, dryrun=self.dryrun)
+
+    @override
+    def process_item_done(
+        self,
+        harvest_item: HarvestItem,
+        status: str,
+        result: tuple[H, Sequence[Relation[H, Any]]] | None = None,
+    ) -> None:
+        """Register the item's relations for later resolution."""
+        if result:
+            item, relations = result
+            self.relations.register(item, relations)
+            # `harvest_item.status` will be updated by `resolve_relations()`
+            return
+        super().process_item_done(harvest_item, status, result)
 
     def resolve_relations(self) -> None:
         """Resolve all harvested items relations and persist the updated items."""

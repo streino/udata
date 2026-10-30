@@ -182,6 +182,8 @@ class InSeriesRelation(Relation[Dataset, Dataset]):
         return super().match(reference, index)
 
     def apply(self, source: Dataset, targets: Sequence[Dataset]) -> bool:
+        # Store the *datagouv* IDs since other IDs are meaningless outside harvesting.
+        # TODO: Replace with a proper mongo ref in the model.
         ids = [str(target.id) for target in targets]
         current_ids = get_dcat_extra(source, DCAT_EXTRA_IN_SERIES) or []
         if ids == current_ids:

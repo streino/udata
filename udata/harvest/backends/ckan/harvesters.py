@@ -54,7 +54,7 @@ def find_resource(dataset: Dataset, remote_id: str) -> Resource | None:
     return get_by(dataset.resources, id=adopted_id)
 
 
-class CkanBackend(BaseBackend):
+class CkanBackend(BaseBackend[Dataset]):
     name = "ckan"
     display_name = "CKAN"
     filters = (
@@ -121,7 +121,7 @@ class CkanBackend(BaseBackend):
         return response.json()
 
     @override
-    def inner_harvest(self):
+    def harvest_loop(self):
         """List all datasets for a given ..."""
         fix = False  # Fix should be True for CKAN < '1.8'
 
@@ -147,9 +147,10 @@ class CkanBackend(BaseBackend):
 
         for name in names:
             # We use `name` as `remote_id` for now, we'll be replace at the beginning of the process
-            self.process_item(name, self.process_dataset)
+            self.process_item(name)
 
-    def process_dataset(self, harvest_item: HarvestItem) -> Dataset:
+    @override
+    def parse_item(self, harvest_item: HarvestItem) -> Dataset:
         response = self.get_action("package_show", id=harvest_item.remote_id)
 
         result = response["result"]

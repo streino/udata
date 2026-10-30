@@ -141,13 +141,13 @@ def dictize(element):
     return element.tag, OrderedDict(extract(element)) or element.text
 
 
-class MaafBackend(BaseBackend):
+class MaafBackend(BaseBackend[Dataset]):
     name = "maaf"
     display_name = "MAAF"
     verify_ssl = False
 
     @override
-    def inner_harvest(self):
+    def harvest_loop(self):
         """Parse the index pages HTML to find link to dataset descriptors"""
         directories = [self.source.url]
         while directories:
@@ -161,11 +161,12 @@ class MaafBackend(BaseBackend):
                 elif href.lower().endswith(".xml"):
                     # We use the URL as `remote_id` for now, we'll be replace at
                     # the beginning of the process
-                    self.process_item(urljoin(directory, href), self.process_dataset)
+                    self.process_item(urljoin(directory, href))
                 else:
                     log.debug("Skip %s", href)
 
-    def process_dataset(self, harvest_item: HarvestItem) -> Dataset:
+    @override
+    def parse_item(self, harvest_item: HarvestItem) -> Dataset:
         response = self.get(harvest_item.remote_id)
         xml = self.parse_xml(response.content)
         metadata = xml["metadata"]

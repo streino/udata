@@ -1,11 +1,11 @@
 import logging
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from itertools import chain
-from typing import Concatenate, Generic, ParamSpec, cast
+from typing import Generic, ParamSpec, cast
 from uuid import UUID
 
 import requests
@@ -94,13 +94,13 @@ class HarvestFeature(object):
 
 H = TypeVar("H", bound=Harvestable)
 
-# `item_processor` result type for a given backend. Either:
+# `parse_item` result type for a given backend. Either:
 # - item: Harvestable (default)
 # - (item, *other): tuple[Harvestable, ...]
-ProcessorResult = TypeVar("ProcessorResult", default=Harvestable)
+ParserResult = TypeVar("ParserResult", default=Harvestable)
 
-# `item_processor` additional params for a given backend.
-ProcessorParams = ParamSpec("ProcessorParams")
+# `parse_item` additional params for a given backend.
+ParserParams = ParamSpec("ParserParams")
 
 
 class StopHarvest(BaseException):
@@ -108,7 +108,7 @@ class StopHarvest(BaseException):
     pass
 
 
-class BaseBackend(Generic[ProcessorResult], ABC):
+class BaseBackend(Generic[ParserResult], ABC):
     """
     Base class that wrap children methods to add error management and debug logs.
     Also provides a few helpers needed on all or some backends.
@@ -204,15 +204,6 @@ class BaseBackend(Generic[ProcessorResult], ABC):
         if extra_config:
             return extra_config["value"]
 
-    @abstractmethod
-    def inner_harvest(self):
-        """
-        Called by the driver to launch the harvest loop.
-
-        Backend implementations MUST override this method.
-        """
-        raise NotImplementedError()
-
     def harvest(self) -> HarvestJob:
         log.debug(f"Starting harvesting {self.source.name} ({self.source.url})…")
         factory = HarvestJob if self.dryrun else HarvestJob.objects.create
@@ -234,7 +225,7 @@ class BaseBackend(Generic[ProcessorResult], ABC):
 
         try:
             try:
-                self.inner_harvest()
+                self.harvest_loop()
             except StopHarvest:
                 if not self.dryrun:
                     error = HarvestError(
@@ -245,24 +236,23 @@ class BaseBackend(Generic[ProcessorResult], ABC):
             if self.source.autoarchive:
                 self.autoarchive()
 
-            self.job.status = "done"
-
+            status = "done"
             if any(i.status == "failed" for i in self.job.items):
-                self.job.status += "-errors"
+                status += "-errors"
+            self.harvest_done(status)
 
         # IMPORTANT:
         # Use `log.exception` only for errors that should be reported in Sentry. See `log`
         # declaration for details.
 
         except HarvestValidationError as e:
-            self.job.status = "failed"
             log.warning(
                 f'Harvesting validation failed for "{safe_unicode(self.source.name)}" ({self.source.backend}): {e}'
             )
             self.job.errors.append(HarvestError(message=safe_unicode(e)))
+            self.harvest_done("failed")
 
         except requests.exceptions.RequestException as e:
-            self.job.status = "failed"
             # Remote down, timeout, redirect or 4xx/5xx are not udata bugs => harvest report
             log.warning(
                 f'Harvesting request error for "{safe_unicode(self.source.name)}" ({self.source.backend}): {e}'
@@ -270,9 +260,9 @@ class BaseBackend(Generic[ProcessorResult], ABC):
             self.job.errors.append(
                 HarvestError(message=safe_unicode(e), details=traceback.format_exc())
             )
+            self.harvest_done("failed")
 
         except Exception as e:
-            self.job.status = "failed"
             # Unexpected exception (potential udata bug) => Sentry
             log.exception(
                 f'Harvesting failed for "{safe_unicode(self.source.name)}" ({self.source.backend})'
@@ -280,33 +270,38 @@ class BaseBackend(Generic[ProcessorResult], ABC):
             self.job.errors.append(
                 HarvestError(message=safe_unicode(e), details=traceback.format_exc())
             )
+            self.harvest_done("failed")
 
         finally:
-            with self.failsafe("update harvested organizations", job_error=False):
-                self.update_harvested_organizations()
-
             self.end_job()
 
         return self.job
 
+    @abstractmethod
+    def harvest_loop(self) -> None:
+        """Called by the driver to launch the harvest loop."""
+        raise NotImplementedError
+
+    def harvest_done(self, status: str) -> None:
+        """Called by the driver once harvesting is done, whatever the status.
+
+        Backend implementations may override this method, but MUST call super().
+        """
+        self.job.status = status
+        with self.failsafe("update harvested organizations", job_error=False):
+            self.update_harvested_organizations()
+
     def process_item(
         self,
         remote_id: str | None,
-        item_processor: Callable[Concatenate[HarvestItem, ProcessorParams], ProcessorResult],
-        *args: ProcessorParams.args,
-        **kwargs: ProcessorParams.kwargs,
-    ) -> ProcessorResult | None:
-        """Process a harvested record into an item, validating and saving it unless in dry-run mode.
+        *args,
+        **kwargs,
+    ) -> None:
+        """Called by `harvest_loop` on each harvested record.
 
-        `item_processor` returns either the `item` itself (the default) or, for backends that need
-        to carry data alongside the item, a `(item, *other)` tuple (see `ProcessorResult`). In both
-        cases the `item` is what gets saved here.
+        Process a record into an item, validating (always) and persisting (not in dry-run) the item.
 
-        The result from `item_processor` is returned only if the whole processing successfully went
-        through. Callers can rely on the returned `item` having been validated and persisted.
-
-        Return the item (or the `(item, *extras)` tuple) on success, or `None` if the record was
-        skipped or failed.
+        Backend implementations may override this method, but MUST call super().
         """
         if self.has_reached_max_items():
             raise StopHarvest()
@@ -325,10 +320,12 @@ class BaseBackend(Generic[ProcessorResult], ABC):
             if not remote_id:
                 raise HarvestSkipException("missing identifier")
 
-            result = item_processor(harvest_item, *args, **kwargs)
+            result = self.parse_item(harvest_item, *args, **kwargs)
+
             # A MongoEngine document is iterable over its field names, so an explicit `isinstance`
             # test is required to tell a tuple apart from a plain item.
             item = cast(Harvestable, result[0] if isinstance(result, tuple) else result)
+
             if item.harvest is None:
                 # Ideally we'd want to check that get_item() got called in item_processor, but it
                 # would require instrumenting get_item() just for that purpose. So instead we check
@@ -369,26 +366,23 @@ class BaseBackend(Generic[ProcessorResult], ABC):
             elif isinstance(item, Dataservice):
                 harvest_item.dataservice = item
 
-            harvest_item.status = "done"
-
-            return result
+            self.process_item_done(harvest_item, "done", result)
 
         # IMPORTANT:
         # Use `log.exception` only for errors that should be reported in Sentry. See `log`
         # declaration for details.
 
         except HarvestSkipException as e:
-            harvest_item.status = "skipped"
             log.info(f"Skipped item {harvest_item.remote_id}: {safe_unicode(e)}")
             harvest_item.errors.append(HarvestError(message=safe_unicode(e)))
+            self.process_item_done(harvest_item, "skipped")
 
         except (HarvestValidationError, MongoValidationError) as e:
-            harvest_item.status = "failed"
             log.info(f"Error validating item {harvest_item.remote_id}: {safe_unicode(e)}")
             harvest_item.errors.append(HarvestError(message=safe_unicode(e)))
+            self.process_item_done(harvest_item, "failed")
 
         except requests.exceptions.RequestException as e:
-            harvest_item.status = "failed"
             log.warning(
                 f"Request error while processing {harvest_item.remote_id}: {safe_unicode(e)}"
             )
@@ -397,20 +391,35 @@ class BaseBackend(Generic[ProcessorResult], ABC):
             harvest_item.errors.append(
                 HarvestError(message=safe_unicode(e), details=traceback.format_exc())
             )
+            self.process_item_done(harvest_item, "failed")
 
         except Exception as e:
-            harvest_item.status = "failed"
             # Unexpected exception (potential udata bug) => Sentry
             log.exception(f"Error while processing {harvest_item.remote_id}: {safe_unicode(e)}")
             harvest_item.errors.append(
                 HarvestError(message=safe_unicode(e), details=traceback.format_exc())
             )
+            self.process_item_done(harvest_item, "failed")
 
         finally:
             current_app.logger.removeHandler(log_catcher)
             self.end_process_item(harvest_item, log_catcher.records)
 
-    def end_process_item(self, harvest_item: HarvestItem, logs: list[logging.LogRecord]):
+    @abstractmethod
+    def parse_item(self, harvest_item: HarvestItem, *args, **kwargs) -> ParserResult:
+        raise NotImplementedError
+
+    def process_item_done(
+        self, harvest_item: HarvestItem, status: str, result: ParserResult | None = None
+    ) -> None:
+        """Called by `process_item` once processing is done, whatever the status.
+
+        Backend implementations may override this method, but MUST call super() or set
+        `harvest_item.status` themselves.
+        """
+        harvest_item.status = status
+
+    def end_process_item(self, harvest_item: HarvestItem, logs: list[logging.LogRecord]) -> None:
         harvest_item.ended = datetime.now(UTC)
         harvest_item.logs = [
             HarvestLog(level=record.levelname, message=record.getMessage()) for record in logs

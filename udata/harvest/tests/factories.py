@@ -44,7 +44,7 @@ mock_process = ns.signal("backend:process")
 DEFAULT_COUNT = 3
 
 
-class FactoryBackend(BaseBackend):
+class FactoryBackend(BaseBackend[Dataset]):
     name = "factory"
     filters = (
         HarvestFilter("Test", "test", int, "An integer"),
@@ -60,12 +60,13 @@ class FactoryBackend(BaseBackend):
     )
 
     @override
-    def inner_harvest(self):
+    def harvest_loop(self):
         mock_initialize.send(self)
         for i in range(self.config.get("count", DEFAULT_COUNT)):
-            self.process_item(str(i), self.process_dataset)
+            self.process_item(str(i))
 
-    def process_dataset(self, harvest_item: HarvestItem) -> Dataset:
+    @override
+    def parse_item(self, harvest_item: HarvestItem) -> Dataset:
         mock_process.send(self, item=harvest_item.remote_id)
         item = self.get_item(harvest_item.remote_id, Dataset)
         item.title = f"dataset-{harvest_item.remote_id}"
