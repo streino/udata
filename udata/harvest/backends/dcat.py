@@ -134,12 +134,29 @@ class DcatBackend(
             self.process_page(page_graph, page_number)
 
     @override
-    def harvest_done(self, status: str) -> None:
-        with self.failsafe("resolve relations"):
+    def end_harvest_hook(self, status: str) -> str | None:
+        try:
             self.resolve_relations()
-        with self.failsafe("store graphs"):
+        except Exception as e:
+            self.record_error(
+                self.job.errors,
+                e,
+                f'Failed resolving relations for "{safe_unicode(self.source.name)}" ({self.source.backend})',
+                level=logging.ERROR,  # sentry
+                exc_info=True,
+            )
+        # FIXME: update job.status
+        try:
             self.store_graphs()
-        super().harvest_done(status)
+        except Exception as e:
+            # FIXME: skip record in job.errors?
+            self.record_error(
+                self.job.errors,
+                e,
+                f'Failed storing graphs for "{safe_unicode(self.source.name)}" ({self.source.backend})',
+                level=logging.ERROR,  # sentry
+                exc_info=True,
+            )
 
     @cached_property
     def format(self) -> str:
@@ -263,28 +280,38 @@ class DcatBackend(
         )
 
     @override
-    def process_item_done(
+    def end_process_item_hook(
         self,
         harvest_item: HarvestItem,
         status: str,
         result: Result | None = None,
-    ) -> None:
+    ) -> str | None:
         """Register the item's relations for later resolution."""
-        if result:
+        if result and status == "done":  # redundant but more explicit
             item, relations = result
+            # FIXME: register conflates register(item) and register(item, relations)
             self.relations.register(item, relations)
-            # `harvest_item.status` will be updated by `resolve_relations()`
-            return
-        super().process_item_done(harvest_item, status, result)
+            if relations:
+                # final status will be set by `resolve_relations()`.
+                # return "started"  # FIXME
+                pass
 
     def resolve_relations(self) -> None:
         """Resolve all harvested items relations and persist the updated items."""
-        updated = self.relations.resolve()
-        if self.dryrun:
-            return
-        for item in updated:
-            with self.failsafe(f"save relations of {item.harvest.remote_id}"):
+        for item in self.relations.resolve():
+            if self.dryrun:
+                return
+            try:
                 item.save()
+                # FIXME: update harvest_item.status
+            except Exception as e:
+                self.record_error(
+                    self.job.errors,
+                    e,
+                    f'Failed saving relations for "{item.harvest.remote_id}"',
+                    level=logging.ERROR,  # sentry
+                    exc_info=True,
+                )
 
     def store_graphs(self):
         # The official MongoDB document size in 16MB. The default value here is 15MB to account
