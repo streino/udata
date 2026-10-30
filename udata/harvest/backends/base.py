@@ -92,19 +92,19 @@ class HarvestFeature(object):
         }
 
 
-H = TypeVar("H", bound=Harvestable)
+Item = TypeVar("Item", bound=Harvestable)
 
-# `parse_item` additional params for a given backend.
-ParserParams = ParamSpec(
-    "ParserParams",
-    # default=[],  # TODO[3.13]
-)
-
-# `parse_item` result type for a given backend. Either `item` or `(item, *extra)`
+# `parse_item` result type for a given backend. Either `item` or `(item, *other)`
 ParserResult = TypeVar(
     "ParserResult",
     bound=Harvestable | tuple[Harvestable, *tuple[Any, ...]],
     # default=Harvestable,  # TODO: needs ParserParams default
+)
+
+# `parse_item` extra args for a given backend.
+ParserParams = ParamSpec(
+    "ParserParams",
+    # default=[],  # TODO[3.13]
 )
 
 
@@ -522,7 +522,7 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
                 )
             )
 
-    def get_item(self, remote_id: str, item_class: type[H]) -> H:
+    def get_item(self, remote_id: str, item_class: type[Item]) -> Item:
         """
         Get or create a `item_class` given its remote ID (and its source).
 

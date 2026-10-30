@@ -17,7 +17,6 @@ from udata.core.dataservices.models import Dataservice
 from udata.core.dataservices.rdf import dataservice_from_rdf
 from udata.core.dataset.models import Dataset
 from udata.core.dataset.rdf import dataset_from_rdf
-from udata.core.harvest import Harvestable
 from udata.harvest.models import HarvestError, HarvestItem
 from udata.i18n import lazy_gettext as _
 from udata.rdf import (
@@ -35,7 +34,7 @@ from udata.storage.s3 import store_as_json
 from udata.utils import safe_unicode, uniquify
 
 from ..relations import Relation, RelationResolver
-from .base import BaseBackend, H, HarvestExtraConfig, HarvestFeature
+from .base import BaseBackend, HarvestExtraConfig, HarvestFeature, Item
 
 log = logging.getLogger(__name__)
 
@@ -83,23 +82,27 @@ def remote_id(node: Node, graph: Graph) -> str | None:
     return None
 
 
-class FromRdf(Protocol[H]):
+# `parse_item` return val: (item, relations)
+Result = tuple[Item, Sequence[Relation[Item, Any]]]
+
+
+class FromRdf(Protocol[Item]):
     def __call__(
         self,
         graph: Graph,
-        item: H,
+        item: Item,
         node: Node,
         /,
         *,
         remote_url_prefix: str | None,
         dryrun: bool,
-    ) -> tuple[H, Sequence[Relation[H, Any]]]: ...
+    ) -> Result[Item]: ...
 
 
 @dataclass(frozen=True)
-class Kind(Generic[H]):
-    model: type[H]
-    from_rdf: FromRdf[H]
+class Kind(Generic[Item]):
+    model: type[Item]
+    from_rdf: FromRdf[Item]
 
 
 DATASET = Kind(Dataset, dataset_from_rdf)
@@ -108,7 +111,8 @@ DATASERVICE = Kind(Dataservice, dataservice_from_rdf)
 
 class DcatBackend(
     BaseBackend[
-        tuple[Harvestable, Sequence[Relation[Any, Any]]],
+        Result,
+        # `parse_item` extra args: node, graph, page_number, kind
         [Node, Graph, int, Kind[Any]],
     ]
 ):
@@ -248,8 +252,8 @@ class DcatBackend(
         node: Node,
         graph: Graph,
         page_number: int,
-        kind: Kind[H],
-    ) -> tuple[H, Sequence[Relation[H, Any]]]:
+        kind: Kind[Item],
+    ) -> Result[Item]:
         harvest_item.kwargs["page_number"] = page_number
         remote_url_prefix = self.get_extra_config_value("remote_url_prefix")
 
@@ -263,7 +267,7 @@ class DcatBackend(
         self,
         harvest_item: HarvestItem,
         status: str,
-        result: tuple[H, Sequence[Relation[H, Any]]] | None = None,
+        result: Result | None = None,
     ) -> None:
         """Register the item's relations for later resolution."""
         if result:
