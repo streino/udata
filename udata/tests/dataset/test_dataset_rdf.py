@@ -52,7 +52,7 @@ from udata.core.dataset.rdf import (
     temporal_from_rdf,
 )
 from udata.core.organization.factories import OrganizationFactory
-from udata.harvest.relations import ItemIndex, Reference
+from udata.harvest.relations import ItemReference, ItemRegistry
 from udata.i18n import gettext as _
 from udata.mongo.datetime_fields import DateRange
 from udata.rdf import (
@@ -2359,11 +2359,11 @@ class InSeriesRelationTest:
     `ISO19139_PARENT_PREFIX`, emitted as literal identifiers by the patched XSLT), and the
     "reflect the source" apply semantics."""
 
-    def match(self, *items: Dataset, reference: Reference) -> Dataset | None:
-        return InSeriesRelation((reference,)).match(reference, ItemIndex(items))
+    def match(self, *items: Dataset, reference: ItemReference) -> Dataset | None:
+        return InSeriesRelation((reference,)).match(reference, ItemRegistry(items))
 
     def apply(self, owner, references, *targets):
-        return InSeriesRelation(tuple(Reference(identifier=r) for r in references)).apply(
+        return InSeriesRelation(tuple(ItemReference(identifier=r) for r in references)).apply(
             owner, targets
         )
 
@@ -2374,11 +2374,15 @@ class InSeriesRelationTest:
         )  # same value, but a *resource* remote id
 
         assert (
-            self.match(parent, decoy, reference=Reference(identifier="urn:iso19139:parent:12345"))
+            self.match(
+                parent, decoy, reference=ItemReference(identifier="urn:iso19139:parent:12345")
+            )
             is parent
         )
         assert (
-            self.match(parent, decoy, reference=Reference(identifier="urn:iso19139:parent:unknown"))
+            self.match(
+                parent, decoy, reference=ItemReference(identifier="urn:iso19139:parent:unknown")
+            )
             is None
         )
 
@@ -2389,7 +2393,7 @@ class InSeriesRelationTest:
 
         assert (
             self.match(
-                parent, reference=Reference(identifier="urn:iso19139:parent:urn:geo2france:abc")
+                parent, reference=ItemReference(identifier="urn:iso19139:parent:urn:geo2france:abc")
             )
             is parent
         )
@@ -2404,10 +2408,13 @@ class InSeriesRelationTest:
         parent = DatasetFactory.build(harvest={"remote_id": "series"}, record_id="abc")
 
         assert (
-            self.match(parent, reference=Reference(identifier="urn:iso19139:parent:abc")) is parent
+            self.match(parent, reference=ItemReference(identifier="urn:iso19139:parent:abc"))
+            is parent
         )
         assert (
-            self.match(parent, reference=Reference(identifier="urn:iso19139:parent:urn:uuid:abc"))
+            self.match(
+                parent, reference=ItemReference(identifier="urn:iso19139:parent:urn:uuid:abc")
+            )
             is None
         )
 
@@ -2416,7 +2423,8 @@ class InSeriesRelationTest:
         dataset = DatasetFactory.build(harvest={"remote_id": "urn:iso19139:parent:12345"})
 
         assert (
-            self.match(dataset, reference=Reference(identifier="urn:iso19139:parent:12345")) is None
+            self.match(dataset, reference=ItemReference(identifier="urn:iso19139:parent:12345"))
+            is None
         )
 
     def test_urn_in_the_uri_address_is_not_intercepted(self):
@@ -2424,13 +2432,13 @@ class InSeriesRelationTest:
         goes through the generic match."""
         parent = DatasetFactory.build(harvest={"remote_id": "series"}, record_id="abc")
 
-        assert self.match(parent, reference=Reference(uri="urn:iso19139:parent:abc")) is None
+        assert self.match(parent, reference=ItemReference(uri="urn:iso19139:parent:abc")) is None
 
     def test_never_falls_back_to_suffix(self):
         """The suffix fallback is a `ServesDatasetRelation` policy."""
         dataset = DatasetFactory.build(harvest={"remote_id": "http://data.test.org/1"})
 
-        assert self.match(dataset, reference=Reference(identifier="1")) is None
+        assert self.match(dataset, reference=ItemReference(identifier="1")) is None
 
     def test_sets_in_series(self):
         child, parent = DatasetFactory.build(id=ObjectId()), DatasetFactory.build(id=ObjectId())
@@ -2522,7 +2530,7 @@ class DatasetFromRdfRunStateTest(PytestOnlyDBTestCase):
         dataset, (relation,) = dataset_from_rdf(graph, Dataset(), self.node)
 
         assert isinstance(relation, InSeriesRelation)
-        assert relation.references == [Reference(uri="http://ex/parent")]
+        assert relation.references == [ItemReference(uri="http://ex/parent")]
         assert "dcat" not in dataset.extras
 
     def test_record_id_is_recorded(self):

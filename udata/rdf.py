@@ -38,7 +38,7 @@ from udata.core.owned import ownership_filter
 from udata.core.user.models import User
 from udata.frontend.markdown import parse_html
 from udata.harvest.filters import normalize_tag
-from udata.harvest.relations import Reference
+from udata.harvest.relations import ItemReference
 from udata.models import Schema
 from udata.mongo.errors import FieldValidationError
 from udata.tags import slug as slugify_tag
@@ -656,17 +656,13 @@ def remote_url_from_rdf(rdf: RdfResource, graph: Graph, remote_url_prefix: str |
                 pass
 
 
-def references_from_rdf(resource: RdfResource, predicate: URIRef) -> list[Reference]:
-    """Collect the references declared on `resource` with `predicate`.
-
-    Each `predicate` object yields one `Reference` carrying the identifiers it can be matched
-    against.
-    """
-    values: list[Reference] = []
+def references_from_rdf(resource: RdfResource, predicate: URIRef) -> list[ItemReference]:
+    """Collect the relation references declared on `resource` with `predicate`."""
+    references: list[ItemReference] = []
     for obj in resource.objects(predicate):
         if isinstance(obj, Literal):
             # Bare literals are treated as identifiers (lenient DCAT).
-            values.append(Reference(identifier=str(obj)))
+            references.append(ItemReference(identifier=str(obj)))
             continue
 
         # `obj` narrowed to `RdfResource`, around either a `URIRef` or a `BNode`.
@@ -678,9 +674,9 @@ def references_from_rdf(resource: RdfResource, predicate: URIRef) -> list[Refere
             log.warning(f"No identifiers for {predicate} node")
             continue
 
-        values.append(Reference(identifier=identifier, uri=uri))
+        references.append(ItemReference(identifier=identifier, uri=uri))
 
-    return uniquify(values)
+    return uniquify(references)
 
 
 def schema_from_rdf(rdf):

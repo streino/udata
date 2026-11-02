@@ -25,17 +25,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-SourceT = TypeVar("SourceT", bound=Harvestable)
-TargetT = TypeVar("TargetT", bound=Harvestable)
+Source = TypeVar("Source", bound=Harvestable)
+Target = TypeVar("Target", bound=Harvestable)
 
 
 @dataclass(frozen=True, kw_only=True)
-class Reference:
-    """Identifiers of the target item referenced by a `Relation`."""
+class ItemReference:
+    """Identifiers of an item, which can be referenced in a `Relation`."""
 
-    # target's dct:identifier
+    # item's dct:identifier
     identifier: str | None = None
-    # target's RDF node URI
+    # item's RDF node URI
     uri: str | None = None
 
     def __post_init__(self):
@@ -43,12 +43,14 @@ class Reference:
             raise ValueError("Reference requires at least one of `identifier` or `uri`")
 
 
-class ItemIndex:
-    """Index of the items used to resolve references, indexed by the different `Harvestable`
-    identifiers a reference may point to (see `Relation.match`).
+class ItemRegistry:
+    """Registry of harvested items, used to resolve relation references.
 
-    Items must be indexed once all its identifiers are known and stable. For instance, an
-    `item_processor` may change its item's `harvest.remote_id` (see CkanBackend), so indexing must
+    Indexed by the different `Harvestable` identifiers a reference may point to. See
+    `Relation.match()`.
+
+    Items must be registered once all its identifiers are known and stable. For instance, some
+    implementations of `parse_item()` can change an item's `harvest.remote_id`, so registering must
     happen after.
     """
 
@@ -68,56 +70,56 @@ class ItemIndex:
 
 
 @dataclass(frozen=True)
-class Relation(ABC, Generic[SourceT, TargetT]):
-    """List of references of a given type, from a source item to its targets.
+class Relation(ABC, Generic[Source, Target]):
+    """List of an item's relations of a given type.
 
-    A relation is declared between an item of type `SourceT` and one or more items of type
-    `TargetT`. Subclasses declare which `target_cls` they accept and define how to `apply` the
-    `resolve`d targets to the source item.
+    A relation is declared between a `Source` and one or more `Target`. Subclasses declare which
+    `target_cls` they accept and define how to `apply()` the `resolve()`d targets to the source
+    item.
     """
 
-    references: Sequence[Reference]
+    references: Sequence[ItemReference]
 
     @property
     @abstractmethod
-    def target_cls(self) -> type[TargetT]:
+    def target_cls(self) -> type[Target]:
         """Returns the class of items this relation accepts as targets."""
 
-    def resolve(self, index: ItemIndex, source: SourceT) -> list[TargetT]:
-        """Resolve references against the items `index`.
+    def resolve(self, source: Source, registry: ItemRegistry) -> list[Target]:
+        """Resolve references against the items in `registry`.
 
         Returns the list of successfully resolved `targets`.
         """
-        targets: list[TargetT] = []
+        targets: list[Target] = []
         for ref in self.references:
-            target = self.match(ref, index)
+            target = self.match(ref, registry)
             if target is None or target is source:
                 continue
             targets.append(target)
         return uniquify(targets)
 
-    def match(self, reference: Reference, index: ItemIndex) -> TargetT | None:
-        """Match `reference` against the items `index`.
+    def match(self, reference: ItemReference, registry: ItemRegistry) -> Target | None:
+        """Match `reference` against the items in `registry`.
 
         Relations can override to implement custom match rules.
         """
-        if target := self.lookup(reference.identifier, index.remote_ids):
+        if target := self.lookup(reference.identifier, registry.remote_ids):
             return target
-        if target := self.lookup(reference.uri, index.uris):
+        if target := self.lookup(reference.uri, registry.uris):
             return target
 
     @abstractmethod
-    def apply(self, source: SourceT, targets: Sequence[TargetT]) -> bool:
+    def apply(self, source: Source, targets: Sequence[Target]) -> bool:
         """Update `source` item from the resolved `targets`.
 
         Returns whether item was updated, i.e. needs to be persisted.
         """
 
-    def lookup(self, key: str | None, table: dict[str, Harvestable]) -> TargetT | None:
-        """Returns `table[key]` if it is the expected type, else `None`."""
+    def lookup(self, key: str | None, index: dict[str, Harvestable]) -> Target | None:
+        """Returns `index[key]` if it is the expected type, else `None`."""
         if key is None:
             return None
-        item = table.get(key)
+        item = index.get(key)
         if item is None:
             return None
         if not isinstance(item, self.target_cls):
@@ -137,12 +139,9 @@ class RelationResolver:
 
     Usage:
     1. For each successfully processed item, call `register(harvest_item, relations)`.
-    2. Once all items have been harvested, iterate `resolve_relations(job.items)` and persist the
-       updated items.
+    2. Once the harvest loop is done, iterate `resolve(job.items)` and persist the updated items.
     """
 
-    # Statuses an item may be in while it still has pending relations. `register` keeps such items
-    # in `started`; `resolve_relations` only considers these statuses.
     resolvable_statuses: ClassVar[frozenset[str]] = frozenset({"started", "done"})
 
     @staticmethod
@@ -151,21 +150,22 @@ class RelationResolver:
         harvest_item.relations += relations
 
     @staticmethod
-    def resolve_relations(harvest_items: Iterable[HarvestItem]) -> Iterator[HarvestItem]:
-        """Resolve every item's relations against all resolvable items, in a single pass.
+    def resolve(harvest_items: Iterable[HarvestItem]) -> Iterator[HarvestItem]:
+        """Resolve every item's relations against all resolvable items in a job, in a single pass.
 
-        Yields the `HarvestItem`s whose item was actually updated, so the caller can persist them.
+        Yields the updated `HarvestItem`s, so the caller can persist their referenced
+        `Harvestable`s.
         """
         resolvable = [
             hi for hi in harvest_items if hi.status in RelationResolver.resolvable_statuses
         ]
-        index = ItemIndex(hi.item for hi in resolvable)
+        registry = ItemRegistry(hi.item for hi in resolvable)
         for hi in resolvable:
             if not hi.relations:
                 continue
             changed = False
             for relation in hi.relations:
-                targets = relation.resolve(index, source=hi.item)
+                targets = relation.resolve(hi.item, registry)
                 changed |= relation.apply(hi.item, targets)
             if changed:
                 yield hi

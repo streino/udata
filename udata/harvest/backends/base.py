@@ -451,7 +451,7 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
             st = self.end_process_item_hook(harvest_item, status, result)
         except Exception as e:
             self.record_error(
-                f'Error while finishing processing (hook) for "{harvest_item.remote_id}"',
+                f'Error in end_process_item_hook for "{harvest_item.remote_id}"',
                 e,
                 destination=harvest_item,
                 level=logging.ERROR,  # sentry

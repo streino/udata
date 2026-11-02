@@ -25,7 +25,7 @@ from udata.core.constants import HVD
 from udata.core.dataset.models import HarvestResourceMetadata
 from udata.core.spatial.models import SpatialCoverage
 from udata.harvest.exceptions import HarvestSkipException
-from udata.harvest.relations import ItemIndex, Reference, Relation
+from udata.harvest.relations import ItemReference, ItemRegistry, Relation
 from udata.mongo.datetime_fields import DateRange
 from udata.rdf import (
     ADMS,
@@ -168,18 +168,18 @@ class InSeriesRelation(Relation[Dataset, Dataset]):
     def target_cls(self) -> type[Dataset]:
         return Dataset
 
-    def match(self, reference: Reference, index: ItemIndex) -> Dataset | None:
+    def match(self, reference: ItemReference, registry: ItemRegistry) -> Dataset | None:
         if reference.identifier and reference.identifier.startswith(ISO19139_PARENT_PREFIX):
             # The patched SEMIC XSLT references the parent record with a literal
             # `urn:iso19139:parent:<record uuid>`: resolve it against the parent record id
             # (`Harvestable.record_id`) only. This is terminal: the URN never falls back to the
             # generic match.
             identifier = reference.identifier.removeprefix(ISO19139_PARENT_PREFIX)
-            target = self.lookup(identifier, index.record_ids)
+            target = self.lookup(identifier, registry.record_ids)
             if target is None:
                 log.debug(f"Unresolved record reference {reference.identifier}")
             return target
-        return super().match(reference, index)
+        return super().match(reference, registry)
 
     def apply(self, source: Dataset, targets: Sequence[Dataset]) -> bool:
         # Store the *datagouv* IDs since other IDs are meaningless outside harvesting.

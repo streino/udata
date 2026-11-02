@@ -18,7 +18,7 @@ from udata.harvest.backends import get_backend
 from udata.harvest.backends.dcat import CswDcatBackend, DcatBackend
 from udata.harvest.exceptions import HarvestSkipException
 from udata.harvest.models import HarvestItem, HarvestJob, HarvestSource
-from udata.harvest.relations import Reference, RelationResolver
+from udata.harvest.relations import ItemReference, RelationResolver
 from udata.models import Dataset
 from udata.storage.s3 import get_from_json
 from udata.tests import PytestOnlyTestCase
@@ -1278,7 +1278,7 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
 
         Returns `(parent, {remote_id: (item, harvest_item)})`.
         """
-        relations = [InSeriesRelation((Reference(identifier="parent"),))]
+        relations = [InSeriesRelation((ItemReference(identifier="parent"),))]
         parent = DatasetFactory.build(harvest={"remote_id": "parent"}, id=ObjectId())
         parent_hi = HarvestItem(status="started", remote_id="parent", dataset=parent)
         backend.job.items.append(parent_hi)
@@ -1302,7 +1302,7 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         register = mocker.spy(RelationResolver, "register")
         saved = DatasetFactory.build(harvest={"remote_id": "saved"})
         saved.slug = "saved"
-        relations = [InSeriesRelation((Reference(identifier="parent"),))]
+        relations = [InSeriesRelation((ItemReference(identifier="parent"),))]
 
         def parse_item(harvest_item, *args, **kwargs):
             if harvest_item.remote_id == "skipped":
@@ -1358,7 +1358,7 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         a = DatasetFactory.build(harvest={"remote_id": "a"})
         parent_hi = HarvestItem(status="started", remote_id="parent", dataset=parent)
         a_hi = HarvestItem(status="started", remote_id="a", dataset=a)
-        RelationResolver.register(a_hi, [InSeriesRelation((Reference(identifier="parent"),))])
+        RelationResolver.register(a_hi, [InSeriesRelation((ItemReference(identifier="parent"),))])
         store_graphs = mocker.patch.object(backend, "store_graphs")
 
         # `harvest()` creates a fresh job, so the items (and their relations) are injected by the

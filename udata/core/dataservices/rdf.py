@@ -9,7 +9,7 @@ from udata.core.constants import HVD
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.models import Dataset, License
 from udata.core.dataset.rdf import dataset_to_graph_id, sanitize_html
-from udata.harvest.relations import ItemIndex, Reference, Relation
+from udata.harvest.relations import ItemReference, ItemRegistry, Relation
 from udata.rdf import (
     CONTACT_POINT_ENTITY_TO_ROLE,
     DCAT,
@@ -40,13 +40,13 @@ class ServesDatasetRelation(Relation[Dataservice, Dataset]):
     def target_cls(self) -> type[Dataset]:
         return Dataset
 
-    def match(self, reference: Reference, index: ItemIndex) -> Dataset | None:
-        if target := super().match(reference, index):
+    def match(self, reference: ItemReference, registry: ItemRegistry) -> Dataset | None:
+        if target := super().match(reference, registry):
             return target
         if reference.identifier:
             # Some ISO catalogs prefix ids with their domain, so we also try a suffix match.
             # TODO: add to default `Relation.match`?
-            return self._match_suffix(reference.identifier, index)
+            return self._match_suffix(reference.identifier, registry)
 
     def apply(self, source: Dataservice, targets: Sequence[Dataset]) -> bool:
         # Only adds: datasets attached by other means are kept.
@@ -54,13 +54,13 @@ class ServesDatasetRelation(Relation[Dataservice, Dataset]):
         source.datasets.extend(new)
         return bool(new)
 
-    def _match_suffix(self, identifier: str, index: ItemIndex) -> Dataset | None:
+    def _match_suffix(self, identifier: str, registry: ItemRegistry) -> Dataset | None:
         # Only match the identifier against `remote_ids`, and only as a delimited suffix so `bcd`
         # doesn't match `http://example.com/abcd`.
         #
         # FIXME: An identifier that is itself an absolute URI should not be suffix-matched, and it's
         # not clear what to do with identifiers such as `urn:uuid:...`.
-        for remote_id, item in index.remote_ids.items():
+        for remote_id, item in registry.remote_ids.items():
             if isinstance(item, self.target_cls) and remote_id.endswith(f"/{identifier}"):
                 return item
 

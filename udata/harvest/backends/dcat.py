@@ -143,6 +143,7 @@ class DcatBackend(
                 level=logging.ERROR,  # sentry
                 exc_info=True,
             )
+
         # FIXME: update job.status
         try:
             self.store_graphs()
@@ -289,7 +290,7 @@ class DcatBackend(
 
     def resolve_relations(self) -> None:
         """Resolve harvested items relations and persist the updated items."""
-        for harvest_item in RelationResolver.resolve_relations(self.job.items):
+        for harvest_item in RelationResolver.resolve(self.job.items):
             assert harvest_item.item is not None
             try:
                 if not self.dryrun:

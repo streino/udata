@@ -17,7 +17,7 @@ from udata.core.dataservices.rdf import (
 )
 from udata.core.dataset.factories import DatasetFactory
 from udata.core.dataset.models import Dataset
-from udata.harvest.relations import ItemIndex, Reference
+from udata.harvest.relations import ItemReference, ItemRegistry
 from udata.rdf import (
     DCAT,
     DCATAP,
@@ -117,7 +117,7 @@ class DataserviceFromRdfTest(PytestOnlyDBTestCase):
 
         assert dataservice.datasets == []
         assert isinstance(relation, ServesDatasetRelation)
-        assert relation.references == [Reference(uri="http://ex/api/records/dataset")]
+        assert relation.references == [ItemReference(uri="http://ex/api/records/dataset")]
         assert dataservice.record_id is None
 
     def test_no_reference_no_relation(self):
@@ -187,22 +187,22 @@ class DataserviceRdfViewsTest(PytestOnlyAPITestCase):
 class ServesDatasetRelationTest:
     """Unit tests of `ServesDatasetRelation`: match (including the suffix fallback) and apply."""
 
-    def match(self, *items: Dataset, reference: Reference) -> Dataset | None:
-        return ServesDatasetRelation([reference]).match(reference, ItemIndex(items))
+    def match(self, *items: Dataset, reference: ItemReference) -> Dataset | None:
+        return ServesDatasetRelation([reference]).match(reference, ItemRegistry(items))
 
     def apply(self, owner, *targets):
-        return ServesDatasetRelation((Reference(identifier="d"),)).apply(owner, targets)
+        return ServesDatasetRelation((ItemReference(identifier="d"),)).apply(owner, targets)
 
     def test_resolves_by_exact_id(self):
         dataset = DatasetFactory.build(harvest={"remote_id": "1"})
 
-        assert self.match(dataset, reference=Reference(identifier="1")) is dataset
+        assert self.match(dataset, reference=ItemReference(identifier="1")) is dataset
 
     def test_resolves_by_exact_uri(self):
         dataset = DatasetFactory.build(harvest={"uri": "http://data.test.org/datasets/1"})
 
         assert (
-            self.match(dataset, reference=Reference(uri="http://data.test.org/datasets/1"))
+            self.match(dataset, reference=ItemReference(uri="http://data.test.org/datasets/1"))
             is dataset
         )
 
@@ -213,37 +213,37 @@ class ServesDatasetRelationTest:
             harvest={"remote_id": "http://x/1"}
         )  # identifier "1" would suffix-match it
 
-        reference = Reference(identifier="1", uri="http://data.test.org/datasets/1")
+        reference = ItemReference(identifier="1", uri="http://data.test.org/datasets/1")
 
         assert self.match(suffixable, dataset, reference=reference) is dataset
 
     def test_resolves_by_suffix(self):
         dataset = DatasetFactory.build(harvest={"remote_id": "http://data.test.org/1"})
 
-        assert self.match(dataset, reference=Reference(identifier="1")) is dataset
+        assert self.match(dataset, reference=ItemReference(identifier="1")) is dataset
 
     def test_suffix_requires_an_identifier(self):
         """A node-URI reference is never suffix-matched."""
         dataset = DatasetFactory.build(harvest={"remote_id": "http://data.test.org/1"})
 
-        assert self.match(dataset, reference=Reference(uri="1")) is None
+        assert self.match(dataset, reference=ItemReference(uri="1")) is None
 
     def test_suffix_requires_a_boundary(self):
         dataset = DatasetFactory.build(harvest={"remote_id": "http://data.test.org/11"})
 
-        assert self.match(dataset, reference=Reference(identifier="1")) is None
+        assert self.match(dataset, reference=ItemReference(identifier="1")) is None
 
     def test_ambiguous_suffix_takes_the_first_candidate(self):
         """On several candidates, the first indexed one wins (`main` took the first match too)."""
         d1 = DatasetFactory.build(harvest={"remote_id": "http://a.org/1"})
         d2 = DatasetFactory.build(harvest={"remote_id": "http://b.org/1"})
 
-        assert self.match(d1, d2, reference=Reference(identifier="1")) is d1
+        assert self.match(d1, d2, reference=ItemReference(identifier="1")) is d1
 
     def test_suffix_only_considers_the_expected_type(self):
         service = DataserviceFactory.build(harvest={"remote_id": "http://data.test.org/1"})
 
-        assert self.match(service, reference=Reference(identifier="1")) is None
+        assert self.match(service, reference=ItemReference(identifier="1")) is None
 
     def test_appends_targets(self):
         # The datasets need a pk: `LazyReference` membership degenerates on pk-less documents.
