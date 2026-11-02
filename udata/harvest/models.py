@@ -1,7 +1,7 @@
 import logging
 from collections import Counter, OrderedDict
 from datetime import UTC, datetime
-from typing import NamedTuple
+from typing import Any, NamedTuple, Self
 from urllib.parse import urlparse
 
 from flask import url_for
@@ -16,7 +16,7 @@ from mongoengine.fields import (
     ReferenceField,
     StringField,
 )
-from mongoengine.signals import post_save
+from mongoengine.signals import post_init, post_save
 from werkzeug.utils import cached_property
 
 from udata.api import fields
@@ -27,6 +27,7 @@ from udata.core.dataset.api_fields import dataset_ref_fields
 from udata.core.dataset.models import Dataset
 from udata.core.harvest import Harvestable
 from udata.core.owned import Owned, OwnedQuerySet
+from udata.harvest.relations import Relation
 from udata.i18n import lazy_gettext as _
 from udata.mongo.document import UDataDocument as Document
 from udata.mongo.errors import FieldValidationError
@@ -136,6 +137,18 @@ class HarvestItem(EmbeddedDocument):
     args = field(ListField(StringField()), description="The item positional arguments")
     kwargs = field(DictField(), description="The item keyword arguments")
 
+    relations: list[Relation[Any, Any]]
+
+    @classmethod
+    def post_init(cls, sender, document: Self, **kwargs):
+        document.relations = []
+
+    @property
+    def item(self) -> Harvestable | None:
+        return self.dataset or self.dataservice
+
+
+post_init.connect(HarvestItem.post_init, sender=HarvestItem)
 
 VALIDATION_ACCEPTED = "accepted"
 VALIDATION_REFUSED = "refused"

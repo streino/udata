@@ -52,7 +52,7 @@ from udata.core.dataset.rdf import (
     temporal_from_rdf,
 )
 from udata.core.organization.factories import OrganizationFactory
-from udata.harvest.relations import ItemIndex, Reference, RelationResolver
+from udata.harvest.relations import ItemIndex, Reference
 from udata.i18n import gettext as _
 from udata.mongo.datetime_fields import DateRange
 from udata.rdf import (
@@ -2431,21 +2431,6 @@ class InSeriesRelationTest:
         dataset = DatasetFactory.build(harvest={"remote_id": "http://data.test.org/1"})
 
         assert self.match(dataset, reference=Reference(identifier="1")) is None
-
-    def test_record_urn_resolution(self):
-        """End-to-end through the resolver: `register` builds the `record_ids` index, `match`
-        resolves the URN against the parent record id, `apply` records the parent's datagouv
-        id (not the raw UUID)."""
-        owner = DatasetFactory.build(harvest={"remote_id": "child"})
-        parent = DatasetFactory.build(harvest={"remote_id": "series"}, record_id="abc")
-        resolver = RelationResolver()
-        resolver.register(
-            owner, [InSeriesRelation((Reference(identifier="urn:iso19139:parent:abc"),))]
-        )
-        resolver.register(parent, [])
-
-        assert resolver.resolve() == [owner]
-        assert owner.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(parent.id)]
 
     def test_sets_in_series(self):
         child, parent = DatasetFactory.build(id=ObjectId()), DatasetFactory.build(id=ObjectId())

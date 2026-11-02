@@ -1007,6 +1007,34 @@ class BaseBackendTest(PytestOnlyDBTestCase):
         assert item == dataset
         assert item.archived_at is None
 
+    def test_process_item_parse_result(self, mocker):
+        """`parse_item`'s tuple result is passed along to `end_process_item_hook`."""
+        dataset = DatasetFactory.build(remote_id="dataset")
+
+        class TupleBackend(BaseBackend[tuple[Dataset, str, str], []]):
+            def harvest_loop(self):
+                raise NotImplementedError
+
+            def parse_item(self, _: HarvestItem) -> tuple[Dataset, str, str]:
+                dataset.set_harvested()
+                return dataset, "foo", "bar"
+
+        backend = TupleBackend(HarvestSourceFactory())
+        backend.job = HarvestJob()
+        backend.remote_ids = set()
+        hook = mocker.spy(backend, "end_process_item_hook")
+
+        backend.process_item("dataset")
+
+        hook.assert_called_once()
+        _, status, result = hook.call_args.args
+        assert status == "done"
+        item, foo, bar = result
+        assert item is dataset
+        assert item.harvest.remote_id == "dataset"
+        assert foo == "foo"
+        assert bar == "bar"
+
     @pytest.mark.parametrize(
         "owner_field, owner_factory",
         argvalues(
@@ -1087,7 +1115,9 @@ class BaseBackendTest(PytestOnlyDBTestCase):
         assert m.archived_at is None  # set but None
         assert m.archived_reason is None  # set but None
 
-    def test_update_harvested_organizations_failsafe(self, mocker):
+    def test_update_harvested_organizations_failed(self, mocker):
+        """A failure in `update_harvested_organizations` is recorded on the job but does
+        not prevent `end_job()` from running nor flip the job status."""
         backend = MockBackend(HarvestSourceFactory())
         backend.update_harvested_organizations = mocker.Mock(side_effect=Exception)
 
@@ -1100,8 +1130,8 @@ class BaseBackendTest(PytestOnlyDBTestCase):
             job = backend.harvest()
 
             assert job.status == "done"
-            # `update_harvested_organizations` should not record errors.
-            assert job.errors == []
+            assert len(job.errors) == 1
+            assert job.errors[0].message.startswith("Error while updating organizations for ")
             # Ensure `end_job()` is fully executed.
             assert job.ended is not None
             signals[pre_save].assert_called_with(HarvestJob, document=job)
@@ -1109,26 +1139,6 @@ class BaseBackendTest(PytestOnlyDBTestCase):
         finally:
             for signal, receiver in signals.items():
                 signal.disconnect(receiver)
-
-    def test_failsafe_true_records_error(self):
-        backend = MockBackend(HarvestSourceFactory())
-        backend.job = HarvestJob()
-
-        with backend.failsafe("some step", job_error=True):
-            raise ValueError("boom")
-
-        assert len(backend.job.errors) == 1
-        assert backend.job.errors[0].message == "some step: boom"
-        assert backend.job.errors[0].details  # contains the traceback
-
-    def test_failsafe_false_only_logs(self):
-        backend = MockBackend(HarvestSourceFactory())
-        backend.job = HarvestJob()
-
-        with backend.failsafe("some step", job_error=False):
-            raise ValueError("boom")
-
-        assert backend.job.errors == []
 
 
 class HarvestItemLogsTest(PytestOnlyDBTestCase):

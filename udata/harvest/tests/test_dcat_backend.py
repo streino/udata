@@ -17,8 +17,8 @@ from udata.core.organization.factories import OrganizationFactory
 from udata.harvest.backends import get_backend
 from udata.harvest.backends.dcat import CswDcatBackend, DcatBackend
 from udata.harvest.exceptions import HarvestSkipException
-from udata.harvest.models import HarvestJob, HarvestSource
-from udata.harvest.relations import Reference
+from udata.harvest.models import HarvestItem, HarvestJob, HarvestSource
+from udata.harvest.relations import Reference, RelationResolver
 from udata.models import Dataset
 from udata.storage.s3 import get_from_json
 from udata.tests import PytestOnlyTestCase
@@ -1240,6 +1240,7 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         dataservice_items = [item for item in job.items if item.dataservice is not None]
         assert len(dataservice_items) == 1
         dataservice_item = dataservice_items[0]
+        # Ensure item is "done" even in preview
         assert dataservice_item.status == "done", dataservice_item.errors
         assert dataservice_item.dataservice.title == "Explore API v2"
 
@@ -1265,22 +1266,30 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
             yield
 
     def backend(self, dryrun: bool = False) -> DcatBackend:
-        backend = DcatBackend(HarvestSource(name="source", url="http://x"), dryrun=dryrun)
+        backend = DcatBackend(
+            HarvestSource(name="source", url="http://x", backend="dcat"), dryrun=dryrun
+        )
         backend.job = HarvestJob()
         backend.__dict__["format"] = "xml"  # cached property: don't query the source
         return backend
 
     def register(self, backend):
-        parent = DatasetFactory.build(harvest={"remote_id": "parent"}, id=ObjectId())
+        """Register a parent and two owners (each with an `InSeriesRelation` to it).
+
+        Returns `(parent, {remote_id: (item, harvest_item)})`.
+        """
         relations = [InSeriesRelation((Reference(identifier="parent"),))]
-        owners = [
-            DatasetFactory.build(harvest={"remote_id": remote_id}, id=ObjectId())
-            for remote_id in ("a", "b")
-        ]
-        backend.relations.register(parent, [])
-        for owner in owners:
-            backend.relations.register(owner, relations)
-        return parent, *owners
+        parent = DatasetFactory.build(harvest={"remote_id": "parent"}, id=ObjectId())
+        parent_hi = HarvestItem(status="started", remote_id="parent", dataset=parent)
+        backend.job.items.append(parent_hi)
+        out = {}
+        for remote_id in ("a", "b"):
+            owner = DatasetFactory.build(harvest={"remote_id": remote_id}, id=ObjectId())
+            owner_hi = HarvestItem(status="started", remote_id=remote_id, dataset=owner)
+            RelationResolver.register(owner_hi, relations)
+            backend.job.items.append(owner_hi)
+            out[remote_id] = (owner, owner_hi)
+        return parent, out
 
     def test_only_saved_items_are_registered(self, mocker):
         """`DcatBackend.process_item` registers the items the base saved: skipped and failed
@@ -1290,7 +1299,7 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         # The dry-run validates the item: the source URL ends up in its metadata, so it must
         # pass the URL validation (unlike the `http://x` dummy used by the other tests).
         backend.source.url = "http://example.com/catalog"
-        register = mocker.spy(backend.relations, "register")
+        register = mocker.spy(RelationResolver, "register")
         saved = DatasetFactory.build(harvest={"remote_id": "saved"})
         saved.slug = "saved"
         relations = [InSeriesRelation((Reference(identifier="parent"),))]
@@ -1305,11 +1314,13 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         backend.process_item("saved")
         backend.process_item("skipped")
 
-        register.assert_called_once_with(saved, relations)
+        register.assert_called_once_with(mocker.ANY, relations)
 
     def test_failure_to_save_one_owner_doesnt_prevent_the_others(self):
         backend = self.backend()
-        _, a, b = self.register(backend)
+        _, out = self.register(backend)
+        a, a_hi = out["a"]
+        b, _b_hi = out["b"]
         saved = []
 
         def fail(*args, **kwargs):
@@ -1321,11 +1332,13 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         backend.resolve_relations()
 
         assert saved == ["b"]
-        assert [e.message for e in backend.job.errors] == ["save relations of a: save-failed"]
+        assert [e.message for e in a_hi.errors] == ['Failed saving relations for "a": save-failed']
 
     def test_dryrun_applies_relations_without_saving(self):
         backend = self.backend(dryrun=True)
-        parent, a, b = self.register(backend)
+        parent, out = self.register(backend)
+        a, _a_hi = out["a"]
+        b, _b_hi = out["b"]
 
         def fail(*args, **kwargs):
             raise AssertionError("saved")
@@ -1338,31 +1351,46 @@ class DcatBackendRelationsTest(PytestOnlyTestCase):
         assert backend.job.errors == []
 
     def test_relations_are_resolved_even_if_the_walk_fails(self, mocker):
-        backend = self.backend()
+        """Relations registered before the walk fails are still resolved (applied) during
+        `end_harvest`, and the graphs still get stored."""
+        backend = self.backend(dryrun=True)
         parent = DatasetFactory.build(harvest={"remote_id": "parent"}, id=ObjectId())
         a = DatasetFactory.build(harvest={"remote_id": "a"})
-        backend.relations.register(parent, [])
-        backend.relations.register(a, [InSeriesRelation((Reference(identifier="parent"),))])
-        a.save = mocker.Mock()
-        backend.walk_paginated_graph = mocker.Mock(side_effect=Exception("walk-failed"))
+        parent_hi = HarvestItem(status="started", remote_id="parent", dataset=parent)
+        a_hi = HarvestItem(status="started", remote_id="a", dataset=a)
+        RelationResolver.register(a_hi, [InSeriesRelation((Reference(identifier="parent"),))])
         store_graphs = mocker.patch.object(backend, "store_graphs")
 
-        with pytest.raises(Exception, match="walk-failed"):
-            backend.harvest_loop()
+        # `harvest()` creates a fresh job, so the items (and their relations) are injected by the
+        # loop itself, right before it fails.
+        def failing_loop():
+            backend.job.items.extend([parent_hi, a_hi])
+            raise Exception("walk-failed")
 
-        a.save.assert_called_once()
+        mocker.patch.object(backend, "harvest_loop", side_effect=failing_loop)
+
+        # Drive the full harvest: `resolve_relations` and `store_graphs` run in the
+        # `end_harvest_hook`, which is only reached from `harvest()`.
+        backend.harvest()
+
+        # Relations registered so far were applied even though the harvest loop raised.
+        assert a.extras["dcat"][DCAT_EXTRA_IN_SERIES] == [str(parent.id)]
         store_graphs.assert_called_once()
 
     def test_resolution_failure_doesnt_prevent_storing_graphs(self, mocker):
-        backend = self.backend()
+        backend = self.backend(dryrun=True)
         backend.walk_paginated_graph = mocker.Mock(return_value=[])
-        mocker.patch.object(backend.relations, "resolve", side_effect=Exception("resolve-failed"))
+        mocker.patch.object(backend, "resolve_relations", side_effect=Exception("resolve-failed"))
         store_graphs = mocker.patch.object(backend, "store_graphs")
 
-        backend.harvest_loop()
+        # Drive the full harvest: `resolve_relations` and `store_graphs` run in the
+        # `end_harvest_hook`, which is only reached from `harvest()`.
+        backend.harvest()
 
         store_graphs.assert_called_once()
-        assert [e.message for e in backend.job.errors] == ["resolve relations: resolve-failed"]
+        assert [e.message for e in backend.job.errors] == [
+            'Failed resolving relations for "source" (dcat): resolve-failed'
+        ]
 
 
 @pytest.mark.options(HARVESTER_BACKENDS=["csw*"])

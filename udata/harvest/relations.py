@@ -9,14 +9,19 @@ Any `Backend` using a `RelationResolver` must:
 2. Once all items have been harvested, `resolve` the relations and persist the updated items.
 """
 
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
 from udata.core.harvest import Harvestable
 from udata.utils import uniquify
+
+if TYPE_CHECKING:
+    from udata.harvest.models import HarvestItem
 
 log = logging.getLogger(__name__)
 
@@ -127,43 +132,40 @@ class Relation(ABC, Generic[SourceT, TargetT]):
 
 
 class RelationResolver:
-    """Collect items' relations during a harvest run, then resolve all the references at once, once
-    all items have been harvested.
+    """Collect items' relations during a harvest run, then resolve all references once all items
+    are known.
+
+    Usage:
+    1. For each successfully processed item, call `register(harvest_item, relations)`.
+    2. Once all items have been harvested, iterate `resolve_relations(job.items)` and persist the
+       updated items.
     """
 
-    def __init__(self) -> None:
-        # Relations by item, but keyed by `id(item)` and not `item`: MongoEngine `__hash__`/`__eq__`
-        # become `pk`-based once `pk` is assigned, and `pk` can be assigned *after* `register` has
-        # been called (in dry-run). So an `item`-keyed dict could end up with the same item
-        # registered on two keys.
-        self._relations: dict[int, tuple[Harvestable, list[Relation[Any, Any]]]] = {}
+    # Statuses an item may be in while it still has pending relations. `register` keeps such items
+    # in `started`; `resolve_relations` only considers these statuses.
+    resolvable_statuses: ClassVar[frozenset[str]] = frozenset({"started", "done"})
 
-    def register(self, item: Harvestable, relations: Sequence[Relation[Any, Any]]) -> None:
-        """Register the `relations` of an `item`.
+    @staticmethod
+    def register(harvest_item: HarvestItem, relations: Sequence[Relation[Any, Any]]) -> None:
+        """Record the relations of a successfully processed item for later resolution."""
+        harvest_item.relations += relations
 
-        Only successfully persisted `item`s should be registered: `item`s are both sources and
-        potential targets of relations, and in both cases skipped/failed items are irrelevant.
+    @staticmethod
+    def resolve_relations(harvest_items: Iterable[HarvestItem]) -> Iterator[HarvestItem]:
+        """Resolve every item's relations against all resolvable items, in a single pass.
 
-        Relations are accumulated per item: a backend may register the same item several times with
-        additional relations.
+        Yields the `HarvestItem`s whose item was actually updated, so the caller can persist them.
         """
-        default_entry: tuple[Harvestable, list[Relation[Any, Any]]] = (item, [])
-        entry = self._relations.setdefault(id(item), default_entry)
-        entry[1].extend(relations)
-
-    def resolve(self) -> list[Harvestable]:
-        """Resolve and apply all previously registered relations.
-
-        Returns the list of items that were updated in the process. The caller is responsible for
-        persisting the changes.
-        """
-        index = ItemIndex(item for item, _ in self._relations.values())
-        updated: list[Harvestable] = []
-        for source, relations in self._relations.values():
+        resolvable = [
+            hi for hi in harvest_items if hi.status in RelationResolver.resolvable_statuses
+        ]
+        index = ItemIndex(hi.item for hi in resolvable)
+        for hi in resolvable:
+            if not hi.relations:
+                continue
             changed = False
-            for relation in relations:
-                targets = relation.resolve(index, source=source)
-                changed |= relation.apply(source, targets)
+            for relation in hi.relations:
+                targets = relation.resolve(index, source=hi.item)
+                changed |= relation.apply(hi.item, targets)
             if changed:
-                updated.append(source)
-        return updated
+                yield hi

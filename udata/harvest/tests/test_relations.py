@@ -11,6 +11,7 @@ from rdflib import Graph, URIRef
 from udata.core.dataservices.models import Dataservice
 from udata.core.dataset.models import Dataset
 from udata.core.harvest import Harvestable
+from udata.harvest.models import HarvestItem
 from udata.harvest.relations import (
     ItemIndex,
     Reference,
@@ -349,118 +350,144 @@ class ReferencesFromRdfTest:
 
 
 class RelationResolverTest:
-    def resolver(self, *items) -> RelationResolver:
-        resolver = RelationResolver()
-        for item, relations in items:
-            resolver.register(item, relations)
-        return resolver
+    @staticmethod
+    def hi(
+        item: Harvestable, *, remote_id: str | None = None, status: str = "started"
+    ) -> HarvestItem:
+        """The `HarvestItem` owning `item`: `resolve_relations()` yields these, not the items."""
+        return HarvestItem(
+            status=status,
+            remote_id=remote_id or item.harvest.remote_id,
+            dataset=item,
+        )
+
+    def test_register_records_relations(self):
+        """`register` records relations on the item for later resolution; it sets no status
+        (the item is kept in the resolvable `started` status by the backend's
+        `end_process_item_hook`)."""
+        owner_hi = self.hi(build_dataset(remote_id="o"))
+        relations = [FakeRelation((Reference(identifier="d1"),))]
+        assert owner_hi.relations == []
+        assert RelationResolver.register(owner_hi, relations) is None
+        assert owner_hi.relations == relations
 
     def test_resolves_and_returns_changed_owners(self):
         owner = build_dataset(remote_id="owner")
         target = build_dataset(remote_id="d1")
+        owner_hi = self.hi(owner)
+        RelationResolver.register(owner_hi, [FakeRelation((Reference(identifier="d1"),))])
 
-        assert self.resolver(
-            (owner, [FakeRelation((Reference(identifier="d1"),))]), (target, [])
-        ).resolve() == [owner]
+        assert list(RelationResolver.resolve_relations([owner_hi, self.hi(target)])) == [owner_hi]
         assert owner.extras["fake"] == ["d1"]
 
-    def test_target_may_be_registered_after_its_owner(self):
+    def test_target_may_be_resolvable_after_its_owner(self):
         for order in ("target first", "owner first"):
             owner = build_dataset(remote_id="owner")
             target = build_dataset(remote_id="d1")
-            owner_relations = [FakeRelation((Reference(identifier="d1"),))]
-            items = (
-                [(target, []), (owner, owner_relations)]
-                if order == "target first"
-                else [(owner, owner_relations), (target, [])]
-            )
+            owner_hi, target_hi = self.hi(owner), self.hi(target)
+            RelationResolver.register(owner_hi, [FakeRelation((Reference(identifier="d1"),))])
+            items = [target_hi, owner_hi] if order == "target first" else [owner_hi, target_hi]
 
-            assert self.resolver(*items).resolve() == [owner], order
+            assert list(RelationResolver.resolve_relations(items)) == [owner_hi], order
 
     def test_unchanged_owner_is_not_returned(self):
         owner = build_dataset(remote_id="owner")
         owner.extras["fake"] = ["d1"]
+        owner_hi = self.hi(owner)
+        RelationResolver.register(owner_hi, [FakeRelation((Reference(identifier="d1"),))])
 
         assert (
-            self.resolver(
-                (owner, [FakeRelation((Reference(identifier="d1"),))]),
-                (build_dataset(remote_id="d1"), []),
-            ).resolve()
+            list(
+                RelationResolver.resolve_relations(
+                    [owner_hi, self.hi(build_dataset(remote_id="d1"))]
+                )
+            )
             == []
         )
 
     def test_owner_with_several_relations_is_returned_once(self):
         owner = build_dataset(remote_id="owner")
-        items = [
-            (
-                owner,
-                [
-                    FakeRelation((Reference(identifier="d1"),)),
-                    FakeRelation((Reference(identifier="d2"),)),
-                ],
-            ),
-            (build_dataset(remote_id="d1"), []),
-            (build_dataset(remote_id="d2"), []),
-        ]
+        owner_hi = self.hi(owner)
+        RelationResolver.register(
+            owner_hi,
+            [
+                FakeRelation((Reference(identifier="d1"),)),
+                FakeRelation((Reference(identifier="d2"),)),
+            ],
+        )
 
         # Both relations write the same key, only the last value survives: what matters here
         # is that the owner is reported once.
-        assert self.resolver(*items).resolve() == [owner]
+        assert list(
+            RelationResolver.resolve_relations(
+                [
+                    owner_hi,
+                    self.hi(build_dataset(remote_id="d1")),
+                    self.hi(build_dataset(remote_id="d2")),
+                ]
+            )
+        ) == [owner_hi]
 
     def test_relations_registered_in_stages_are_merged(self):
         """A backend may register the same item several times (staged processing): relations
-        accumulate and the item is resolved, hence reported, only once — even when its pk is
-        assigned between the registrations, which changes its MongoEngine `__hash__`."""
+        accumulate and the item is resolved, hence reported, only once."""
         owner = build_dataset(remote_id="owner", saved=False)
-        target = build_dataset(remote_id="d1", saved=False)
-        d2 = build_dataset(remote_id="d2")
-        resolver = RelationResolver()
-        resolver.register(owner, [FakeRelation((Reference(identifier="d1"),))])
-        resolver.register(target, [])
-        owner.id = ObjectId()  # pk assigned between registrations (dry-run does it late)
-        resolver.register(owner, [FakeRelation((Reference(identifier="d2"),))])
-        target.id = ObjectId()
-        resolver.register(d2, [])
+        owner_hi = self.hi(owner)
+        RelationResolver.register(owner_hi, [FakeRelation((Reference(identifier="d1"),))])
+        RelationResolver.register(owner_hi, [FakeRelation((Reference(identifier="d2"),))])
 
-        assert resolver.resolve() == [owner]
+        assert list(
+            RelationResolver.resolve_relations(
+                [
+                    owner_hi,
+                    self.hi(build_dataset(remote_id="d1")),
+                    self.hi(build_dataset(remote_id="d2")),
+                ]
+            )
+        ) == [owner_hi]
         # Both stages' relations were applied: the last one wins the `fake` extra.
         assert owner.extras["fake"] == ["d2"]
 
     def test_no_relation_nothing_to_do(self):
-        assert self.resolver((build_dataset(remote_id="d1"), [])).resolve() == []
-
-    def test_items_whose_pk_is_assigned_after_registration(self):
-        """Items can be registered before their pk is known (dry-run assigns it late)."""
-        owner = build_dataset(remote_id="owner", saved=False)
-        target = build_dataset(remote_id="d1", saved=False)
-        resolver = self.resolver(
-            (owner, [FakeRelation((Reference(identifier="d1"),))]), (target, [])
-        )
-
-        owner.id = ObjectId()
-        target.id = ObjectId()
-
-        assert resolver.resolve() == [owner]
+        d1 = build_dataset(remote_id="d1")
+        assert list(RelationResolver.resolve_relations([self.hi(d1)])) == []
 
     def test_remote_id_set_after_registration(self):
-        """The backend only finishes filling `harvest.remote_id` once the item is saved."""
+        """The backend only finishes filling `harvest.remote_id` once the item is saved: the index
+        is built at resolution time, so it sees the final identifiers."""
         owner = build_dataset(remote_id="owner")
         target = build_dataset(uri="http://ex/1")
-        resolver = self.resolver(
-            (owner, [FakeRelation((Reference(identifier="d1"),))]), (target, [])
-        )
+        owner_hi, target_hi = self.hi(owner), self.hi(target)
+        RelationResolver.register(owner_hi, [FakeRelation((Reference(identifier="d1"),))])
 
         target.harvest.remote_id = "d1"
 
-        assert resolver.resolve() == [owner]
+        assert list(RelationResolver.resolve_relations([owner_hi, target_hi])) == [owner_hi]
 
-    def test_unregistered_items_are_neither_targets_nor_owners(self):
-        """Failed and skipped items are never registered (see `BaseBackend.process_item`): a
-        relation pointing to them does not resolve, and the owner is left untouched."""
+    def test_unresolvable_status_is_not_indexed_as_target(self):
+        """Failed and skipped items are neither targets of the resolution: a relation pointing to
+        them does not resolve."""
         owner = build_dataset(remote_id="owner")
+        owner_hi = self.hi(owner)
+        RelationResolver.register(owner_hi, [FakeRelation((Reference(identifier="failed"),))])
+        # A "failed" item is present but not in a resolvable status: it is not indexed.
+        failed_hi = self.hi(build_dataset(remote_id="failed"), status="failed")
+
+        assert list(RelationResolver.resolve_relations([owner_hi, failed_hi])) == []
+        assert "fake" not in owner.extras  # its target "failed" is unresolvable
+
+    def test_unresolvable_owner_relations_are_skipped(self):
+        """An item no longer in a resolvable status (e.g. `failed`) does not get its relations
+        applied even if it carries some."""
+        owner = build_dataset(remote_id="owner")
+        owner_hi = self.hi(owner, status="failed")
+        RelationResolver.register(owner_hi, [FakeRelation((Reference(identifier="d1"),))])
 
         assert (
-            self.resolver((owner, [FakeRelation((Reference(identifier="failed"),))])).resolve()
+            list(
+                RelationResolver.resolve_relations(
+                    [owner_hi, self.hi(build_dataset(remote_id="d1"))]
+                )
+            )
             == []
         )
-        assert "fake" not in owner.extras  # its target "failed" was never registered

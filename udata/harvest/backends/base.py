@@ -242,6 +242,7 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
             status = "done"
             if any(i.status == "failed" for i in self.job.items):
                 status += "-errors"
+
             self.end_harvest(status)
 
         # IMPORTANT:
@@ -291,20 +292,18 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
         try:
             self.update_harvested_organizations()
         except Exception as e:
-            self.record_error(
-                self.job.errors,
+            self.record_job_error(
+                f'Error while updating organizations for "{safe_unicode(self.source.name)}" ({self.source.backend})',
                 e,
-                f'Error while finishing harvesting for "{safe_unicode(self.source.name)}" ({self.source.backend})',
                 level=logging.ERROR,  # sentry
                 exc_info=True,
             )
         try:
             st = self.end_harvest_hook(status)
         except Exception as e:
-            self.record_error(
-                self.job.errors,
+            self.record_job_error(
+                f'Error in end_harvest_hook for "{safe_unicode(self.source.name)}" ({self.source.backend})',
                 e,
-                f'Error while finishing harvesting (hook) for "{safe_unicode(self.source.name)}" ({self.source.backend})',
                 level=logging.ERROR,  # sentry
                 exc_info=True,
             )
@@ -442,6 +441,8 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
     ) -> None:
         """Called by `process_item` once processing is done, whatever the status.
 
+        `result` should be passed only when item was successfully processed.
+
         Backend implementations may override this method, but MUST call super() or set
         `harvest_item.status` themselves.
         """
@@ -450,9 +451,9 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
             st = self.end_process_item_hook(harvest_item, status, result)
         except Exception as e:
             self.record_error(
-                harvest_item.errors,
-                e,
                 f'Error while finishing processing (hook) for "{harvest_item.remote_id}"',
+                e,
+                destination=harvest_item,
                 level=logging.ERROR,  # sentry
                 exc_info=True,
             )
@@ -654,20 +655,31 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
             msg = "\n- ".join(["Validation error:"] + errors)
             raise HarvestValidationError(msg)
 
+    def record_job_error(
+        self,
+        label: str,
+        exc: BaseException,
+        *,
+        level: int = logging.WARNING,
+        exc_info: bool = False,
+    ) -> None:
+        BaseBackend.record_error(label, exc, destination=self.job, level=level, exc_info=exc_info)
+
     @staticmethod
     def record_error(
-        records: list[HarvestError],
-        exc: BaseException,
         label: str,
+        exc: BaseException,
         *,
+        destination: HarvestJob | HarvestItem | None = None,
         level: int = logging.WARNING,
         exc_info: bool = False,
     ) -> None:
         msg = f"{label}: {safe_unicode(exc)}"
         log.log(level, msg, exc_info=exc_info)
-        records.append(
-            HarvestError(message=msg, details=traceback.format_exc() if exc_info else None)
-        )
+        if destination:
+            destination.errors.append(
+                HarvestError(message=msg, details=traceback.format_exc() if exc_info else None)
+            )
 
 
 class LogCatcher(logging.Handler):
