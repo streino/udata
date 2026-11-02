@@ -427,6 +427,7 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
             current_app.logger.removeHandler(log_catcher)
             self.end_harvest_item(harvest_item, log_catcher.records)
 
+    # FIXME: docstring
     @abstractmethod
     def parse_item(
         self,
@@ -436,6 +437,7 @@ class BaseBackend(Generic[ParserResult, ParserParams], ABC):
     ) -> ParserResult:
         raise NotImplementedError
 
+    # FIXME: add invariant + test on status == "done" and result is not None
     def end_process_item(
         self, harvest_item: HarvestItem, status: str, result: ParserResult | None = None
     ) -> None:

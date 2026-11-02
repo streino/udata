@@ -291,6 +291,7 @@ class DcatBackend(
     def resolve_relations(self) -> None:
         """Resolve harvested items relations and persist the updated items."""
         for harvest_item in RelationResolver.resolve(self.job.items):
+            # FIXME: invariant
             assert harvest_item.item is not None
             try:
                 if not self.dryrun:

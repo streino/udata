@@ -108,6 +108,8 @@ class ItemIndexTest:
         assert index.uris == {}
         assert index.record_ids == {}
 
+    # FIXME: more tests: semi dupes, uri-only, ...
+
 
 class RelationTest:
     def match(self, reference: ItemReference, items: Sequence[Harvestable]) -> Dataset | None:

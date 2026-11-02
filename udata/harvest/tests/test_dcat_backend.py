@@ -1256,6 +1256,7 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         assert Dataservice.objects.count() == 0
 
 
+# FIXME: review
 class DcatBackendRelationsTest(PytestOnlyTestCase):
     """Relation-specific tests."""
 

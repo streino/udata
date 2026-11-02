@@ -4,6 +4,7 @@ from udata.core.dataservices.models import Dataservice, HarvestDataserviceMetada
 from udata.core.dataset.models import Dataset, HarvestDatasetMetadata
 
 
+# FIXME: needed? relevant here? FakeHarvestable?
 class HarvestableTest:
     """`Harvestable.set_harvested` instantiates the metadata class of the `harvest` field when
     it is unset and never clobbers an existing value."""

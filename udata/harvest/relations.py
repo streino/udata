@@ -160,6 +160,7 @@ class RelationResolver:
             hi for hi in harvest_items if hi.status in RelationResolver.resolvable_statuses
         ]
         registry = ItemRegistry(hi.item for hi in resolvable)
+        # FIXME hi.item can be None
         for hi in resolvable:
             if not hi.relations:
                 continue
