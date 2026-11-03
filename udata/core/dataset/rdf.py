@@ -66,7 +66,7 @@ from udata.rdf import (
 )
 from udata.utils import get_by, safe_harvest_datetime, safe_unicode, uniquify
 
-from .constants import OGC_SERVICE_FORMATS, DistanceUom, UpdateFrequency
+from .constants import DCAT_EXTRAS_KEY, OGC_SERVICE_FORMATS, DistanceUom, UpdateFrequency
 from .models import Checksum, Dataset, License, Resource
 
 log = logging.getLogger(__name__)
@@ -151,6 +151,8 @@ QUDT_TO_UDATA = {
 
 # Custom (SEMIC XSLT datagouv patch) record id format: `urn:iso19139:parent:<record uuid>`
 ISO19139_PARENT_PREFIX = "urn:iso19139:parent:"
+# Custom `extras["dcat"]` key storing parent `dataset.id`
+DCAT_EXTRAS_PARENT_KEY = "parent"
 
 
 def temporal_to_rdf(daterange: DateRange, graph: Graph | None = None) -> RdfResource | None:
@@ -807,7 +809,7 @@ def inspire_category_from_rights(rights: Collection[str]) -> InspireLimitationCa
     return None
 
 
-def custom_parent_record_id_from_rdf(resource: RdfResource) -> str | None:
+def custom_iso19139_parent_record_id_from_rdf(resource: RdfResource) -> str | None:
     """Return the first parent record identifier, if any.
 
     Currently only supports the custom `urn:iso19139:parent:...` pattern implemented ahead of
@@ -825,20 +827,32 @@ def custom_parent_record_id_from_rdf(resource: RdfResource) -> str | None:
     return None
 
 
-def set_dcat_extra(obj: Dataset | Resource, property: URIRef | str, value: str | Collection):
+def set_dcat_extra(
+    obj: Dataset | Resource, property: URIRef | str, value: str | Collection
+) -> None:
     key = localname(property) if isinstance(property, URIRef) else property
     if not isinstance(value, str):
         value = list(value)
-    obj.extras["dcat"] = {
-        **obj.extras.get("dcat", {}),
+    obj.extras[DCAT_EXTRAS_KEY] = {
+        **obj.extras.get(DCAT_EXTRAS_KEY, {}),
         key: value,
     }
 
 
 def get_dcat_extra(obj: Dataset | Resource, property: URIRef | str) -> str | list | None:
     key = localname(property) if isinstance(property, URIRef) else property
-    if dcat := obj.extras.get("dcat"):
+    if dcat := obj.extras.get(DCAT_EXTRAS_KEY):
         return dcat.get(key)
+
+
+def unset_dcat_extra(obj: Dataset | Resource, property: URIRef | str) -> None:
+    key = localname(property) if isinstance(property, URIRef) else property
+    if dcat := obj.extras.get(DCAT_EXTRAS_KEY):
+        remaining = {k: v for k, v in dcat.items() if k != key}
+        if remaining:
+            obj.extras[DCAT_EXTRAS_KEY] = remaining
+        else:
+            del obj.extras[DCAT_EXTRAS_KEY]
 
 
 def get_unanimous_dcat_extra(
@@ -1093,8 +1107,11 @@ def dataset_from_rdf(
         modified_at, "DCT.modified (dataset)", refuse_future=True
     )
 
-    dataset.record_id = record_id_from_rdf(d)
-    dataset.parent_record_id = custom_parent_record_id_from_rdf(d)
+    dataset.harvest.record_id = record_id_from_rdf(d)
+    if (
+        record_id := custom_iso19139_parent_record_id_from_rdf(d)
+    ) and record_id != dataset.harvest.record_id:
+        dataset.harvest.parent_record_id = record_id
 
     return dataset
 

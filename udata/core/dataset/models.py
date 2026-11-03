@@ -69,6 +69,7 @@ from udata.utils import get_by, hash_url, to_naive_datetime
 from .constants import (
     CHECKSUM_TYPES,
     CLOSED_FORMATS,
+    DCAT_EXTRAS_KEY,
     DEFAULT_LICENSE,
     DESCRIPTION_SHORT_SIZE_LIMIT,
     INSPIRE,
@@ -127,6 +128,10 @@ class HarvestDatasetMetadata(HarvestMetadata):
     dct_identifier = StringField()
     ckan_name = StringField()
     ckan_source = StringField()
+
+    # In-memory attributes, only used within a harvest job run.
+    record_id: str | None = None
+    parent_record_id: str | None = None
 
 
 class HarvestResourceMetadata(EmbeddedDocument):
@@ -428,7 +433,7 @@ class ResourceMixin(object):
         # rendered but resolves which resource the export job overwrites, so a forged
         # one redirects that write. `apidocUrl` and `datafairOrigin` stay user
         # writable, hence their URL type above.
-        reserved=("analysis:*", "check:*", "csv-export:*", "validation-report:*", "dcat"),
+        reserved=("analysis:*", "check:*", "csv-export:*", "validation-report:*", DCAT_EXTRAS_KEY),
     )
     harvest = EmbeddedDocumentField(HarvestResourceMetadata)
     geopf = EmbeddedDocumentField(GeopfResourceMetadata)
@@ -647,7 +652,7 @@ class Dataset(
     extras = field(
         ExtrasField(
             {"datafairOrigin": URLField, "transport:url": URLField},
-            reserved=("transport:*", "recommendations*", "dcat"),
+            reserved=("transport:*", "recommendations*", DCAT_EXTRAS_KEY),
         ),
         auditable=False,
     )
@@ -748,10 +753,6 @@ class Dataset(
     verbose_name = _("dataset")
 
     missing_resources = False
-
-    # In-memory, temporary attributes used only within a harvest job run.
-    record_id: str | None = None
-    parent_record_id: str | None = None
 
     @property
     def archived_at(self):

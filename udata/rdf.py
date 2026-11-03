@@ -577,9 +577,9 @@ def record_id_from_rdf(resource: RdfResource) -> str | None:
     # - mdb:metadataIdentifier/mcc:MD_Identifier/mcc:codeSpace = "urn:uuid".
     #
     # That codeSpace ends up collapsed in the record dct:identifier. This means dct:identifier
-    # differs (by the codeSpace) from the record ID that GeoNetwork uses internally, including
-    # for its URLs. So we need to extract the original record ID from dct:identifier to build a
-    # valid remote_url.
+    # differs (by the codeSpace) from the record ID that GeoNetwork uses internally, including for
+    # its URLs. So we need to extract the original record ID from dct:identifier to expose a stable
+    # record id (e.g. for parent resolution) and build a valid remote_url in remote_url_from_rdf.
     #
     # URN parsing rules depend on the namespace of the URN (urn:<namespace>:...), so there is no
     # generic way to extract the codeSpace. Here we only handle the "uuid" namespace (RFC-4122),

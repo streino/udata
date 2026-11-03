@@ -55,12 +55,14 @@ class HarvestableFactoryMixin(_ModelFactoryBase):
 
     @factory.post_generation
     def record_id(obj, create, extracted, **kwargs):
-        """Sets `obj.record_id`. In-memory only, not saved in the mongo document."""
+        """Sets `obj.harvest.record_id`. In-memory only, not saved in the mongo document."""
         if extracted:
-            obj.record_id = extracted
+            obj.set_harvested()
+            obj.harvest.record_id = extracted
 
     @factory.post_generation
     def parent_record_id(obj, create, extracted, **kwargs):
-        """Sets `obj.parent_record_id`. In-memory only, not saved in the mongo document."""
+        """Sets `obj.harvest.parent_record_id`. In-memory only, not saved in the mongo document."""
         if extracted:
-            obj.parent_record_id = extracted
+            obj.set_harvested()
+            obj.harvest.parent_record_id = extracted

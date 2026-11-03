@@ -1311,7 +1311,7 @@
 -->
       <xsl:if test="$profile = $extended">  <!-- same $profile as fileIdentifier -->
         <xsl:for-each select="gmd:parentIdentifier/gco:CharacterString">
-          <dcat:inSeries rdf:resource="urn:iso19139:parent:{.}"></dcat:inSeries>
+          <dcat:inSeries rdf:resource="urn:iso19139:parent:{normalize-space(.)}"></dcat:inSeries>
         </xsl:for-each>
       </xsl:if>
 
