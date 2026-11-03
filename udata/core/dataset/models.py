@@ -749,6 +749,10 @@ class Dataset(
 
     missing_resources = False
 
+    # In-memory, temporary attributes used only within a harvest job run.
+    record_id: str | None = None
+    parent_record_id: str | None = None
+
     @property
     def archived_at(self):
         return self.archived

@@ -13,8 +13,8 @@ from udata.core.dataset.constants import UpdateFrequency
 from udata.core.dataset.factories import DatasetFactory, LicenseFactory, ResourceSchemaMockData
 from udata.core.organization.factories import OrganizationFactory
 from udata.harvest.backends import get_backend
-from udata.harvest.backends.dcat import CswDcatBackend
-from udata.harvest.models import HarvestJob
+from udata.harvest.backends.dcat import CswDcatBackend, DcatBackend
+from udata.harvest.models import HarvestItem, HarvestJob
 from udata.models import Dataset
 from udata.storage.s3 import get_from_json
 from udata.tests.api import PytestOnlyAPITestCase, PytestOnlyDBTestCase
@@ -82,6 +82,14 @@ def mock_xslt(rmock, filename="iso-19139-to-dcat-ap.xsl"):
     with open(os.path.join(CSW_DCAT_FILES_DIR, filename), "r") as f:
         xslt = f.read()
     rmock.get(current_app.config.get("HARVEST_ISO19139_XSLT_URL"), text=xslt)
+
+
+def _backend_with_items(*items, **kwargs):
+    source = HarvestSourceFactory(backend="dcat")
+    job = HarvestJob(source=source, status="initialized")
+    job.items = list(items)
+    backend = DcatBackend(job, **kwargs)
+    return backend
 
 
 @pytest.mark.options(HARVESTER_BACKENDS=["dcat"])
@@ -1067,6 +1075,94 @@ class DcatBackendTest(PytestOnlyDBTestCase):
         assert Dataset.objects.count() == 0
         assert Dataservice.objects.count() == 0
 
+    def test_resolve_parents(self):
+        """A child dataset gets its parent id set in `extras["parent"]`, and is persisted."""
+        parent = DatasetFactory(record_id="parent-record")
+        child = DatasetFactory(parent_record_id="parent-record")
+
+        _backend_with_items(
+            HarvestItem(remote_id="parent", status="done", dataset=parent),
+            HarvestItem(remote_id="child", status="done", dataset=child),
+        ).resolve_parents()
+
+        assert child.extras["parent"] == parent.id
+        assert Dataset.objects(id=child.id).first().extras["parent"] == parent.id
+
+    def test_resolve_parents_order_independent(self):
+        """A parent is resolved even when it is harvested after its children."""
+        parent = DatasetFactory(record_id="parent-record")
+        child = DatasetFactory(parent_record_id="parent-record")
+
+        _backend_with_items(
+            HarvestItem(remote_id="child", status="done", dataset=child),
+            HarvestItem(remote_id="parent", status="done", dataset=parent),
+        ).resolve_parents()
+
+        assert child.extras["parent"] == parent.id
+
+    def test_resolve_parents_unresolved(self):
+        """A child whose parent doesn't exist removes its extra, records an warning, but stays `done`."""
+        child = DatasetFactory(parent_record_id="missing-parent", extras={"parent": "some-parent"})
+        hi = HarvestItem(remote_id="child", status="done", dataset=child, errors=[])
+        assert hi.dataset.extras["parent"] == "some-parent"
+
+        _backend_with_items(hi).resolve_parents()
+
+        assert hi.status == "done"
+        assert len(hi.errors) == 1
+        assert "missing-parent" in hi.errors[0].message
+        assert "parent" not in child.extras
+        assert "parent" not in Dataset.objects(id=child.id).first().extras
+
+    def test_resolve_parents_no_parent(self):
+        """A dataset with no `parent_record_id` is left untouched."""
+        child = DatasetFactory(record_id="child-record", extras={"some": "value"})
+        hi = HarvestItem(remote_id="child", status="done", dataset=child, errors=[])
+
+        _backend_with_items(hi).resolve_parents()
+
+        assert "parent" not in child.extras
+        assert hi.status == "done"
+        assert len(hi.errors) == 0
+
+    def test_resolve_parents_only_done_items(self):
+        """A non-`done` item is not considered as a valid parent."""
+        skipped = DatasetFactory(record_id="parent-record")
+        child = DatasetFactory(parent_record_id="parent-record")
+
+        _backend_with_items(
+            HarvestItem(remote_id="parent", status="skipped", dataset=skipped),
+            HarvestItem(remote_id="child", status="done", dataset=child),
+        ).resolve_parents()
+
+        assert "parent" not in child.extras
+
+    def test_resolve_parents_partial_harvest(self):
+        """Parents are not resolved on partial harvest."""
+        parent = DatasetFactory(record_id="parent-record")
+        child = DatasetFactory(parent_record_id="parent-record")
+
+        _backend_with_items(
+            HarvestItem(remote_id="parent", status="done", dataset=parent),
+            HarvestItem(remote_id="child", status="done", dataset=child),
+        ).resolve_parents(full_harvest=False)
+
+        assert child.extras.get("parent") is None
+
+    def test_resolve_parents_dryrun(self):
+        """In preview mode the parent link is resolved but not persisted."""
+        parent = DatasetFactory(record_id="parent-record")
+        child = DatasetFactory(parent_record_id="parent-record")
+
+        _backend_with_items(
+            HarvestItem(remote_id="parent", status="done", dataset=parent),
+            HarvestItem(remote_id="child", status="done", dataset=child),
+            dryrun=True,
+        ).resolve_parents()
+
+        assert child.extras["parent"] == parent.id
+        assert "parent" not in Dataset.objects(id=child.id).first().extras
+
 
 @pytest.mark.options(HARVESTER_BACKENDS=["csw*"])
 class CswDcatBackendTest(PytestOnlyDBTestCase):
@@ -1688,6 +1784,95 @@ class CswIso19139DcatBackendTest(PytestOnlyDBTestCase):
 
         dataset = Dataset.objects[0]
         assert dataset.harvest.remote_url == "http://catalog.example.com/id-1"
+
+    def test_parent_id_csw_iso19139(self, rmock):
+        """A child ISO-19139 record gets its parent dataset linked in `extras["parent"]`."""
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <csw:GetRecordsResponse xmlns:csw="http://www.opengis.net/cat/csw/2.0.2"
+                                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                                xsi:schemaLocation="http://www.opengis.net/cat/csw/2.0.2 http://schemas.opengis.net/csw/2.0.2/CSW-discovery.xsd">
+          <csw:SearchStatus timestamp="2023-03-03T16:09:50.697645Z" />
+          <csw:SearchResults numberOfRecordsMatched="1" numberOfRecordsReturned="1" elementSet="full" nextRecord="0">
+            <gmd:MD_Metadata xmlns:gmd="http://www.isotc211.org/2005/gmd" xmlns:gco="http://www.isotc211.org/2005/gco" xmlns:srv="http://www.isotc211.org/2005/srv" xmlns:gmx="http://www.isotc211.org/2005/gmx" xmlns:gts="http://www.isotc211.org/2005/gts" xmlns:gsr="http://www.isotc211.org/2005/gsr" xmlns:gmi="http://www.isotc211.org/2005/gmi" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xlink="http://www.w3.org/1999/xlink">
+              <gmd:fileIdentifier>
+                <gco:CharacterString>child-record-id</gco:CharacterString>
+              </gmd:fileIdentifier>
+              <gmd:parentIdentifier>
+                <gco:CharacterString>parent-record-id</gco:CharacterString>
+              </gmd:parentIdentifier>
+              <gmd:hierarchyLevel>
+                <gmd:MD_ScopeCode codeListValue="dataset" codeList="http://standards.iso.org/ittf/PubliclyAvailableStandards/ISO_19139_Schemas/resources/codelist/gmxCodelists.xml#MD_ScopeCode">dataset</gmd:MD_ScopeCode>
+              </gmd:hierarchyLevel>
+              <gmd:identificationInfo>
+                <gmd:MD_DataIdentification>
+                  <gmd:citation>
+                    <gmd:CI_Citation>
+                      <gmd:title>
+                         <gco:CharacterString>Child</gco:CharacterString>
+                       </gmd:title>
+                       <gmd:identifier>
+                        <gmd:MD_Identifier>
+                          <gmd:code>
+                            <gco:CharacterString>child-id</gco:CharacterString>
+                          </gmd:code>
+                        </gmd:MD_Identifier>
+                      </gmd:identifier>
+                    </gmd:CI_Citation>
+                  </gmd:citation>
+                </gmd:MD_DataIdentification>
+              </gmd:identificationInfo>
+            </gmd:MD_Metadata>
+            <gmd:MD_Metadata xmlns:gmd="http://www.isotc211.org/2005/gmd" xmlns:gco="http://www.isotc211.org/2005/gco" xmlns:srv="http://www.isotc211.org/2005/srv" xmlns:gmx="http://www.isotc211.org/2005/gmx" xmlns:gts="http://www.isotc211.org/2005/gts" xmlns:gsr="http://www.isotc211.org/2005/gsr" xmlns:gmi="http://www.isotc211.org/2005/gmi" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xlink="http://www.w3.org/1999/xlink">
+              <gmd:fileIdentifier>
+                <gco:CharacterString>parent-record-id</gco:CharacterString>
+              </gmd:fileIdentifier>
+              <gmd:hierarchyLevel>
+                <gmd:MD_ScopeCode codeListValue="dataset" codeList="http://standards.iso.org/ittf/PubliclyAvailableStandards/ISO_19139_Schemas/resources/codelist/gmxCodelists.xml#MD_ScopeCode">dataset</gmd:MD_ScopeCode>
+              </gmd:hierarchyLevel>
+              <gmd:identificationInfo>
+                <gmd:MD_DataIdentification>
+                  <gmd:citation>
+                    <gmd:CI_Citation>
+                      <gmd:title>
+                         <gco:CharacterString>Parent</gco:CharacterString>
+                       </gmd:title>
+                       <gmd:identifier>
+                        <gmd:MD_Identifier>
+                          <gmd:code>
+                            <gco:CharacterString>parent-id</gco:CharacterString>
+                          </gmd:code>
+                        </gmd:MD_Identifier>
+                      </gmd:identifier>
+                    </gmd:CI_Citation>
+                  </gmd:citation>
+                </gmd:MD_DataIdentification>
+              </gmd:identificationInfo>
+            </gmd:MD_Metadata>
+          </csw:SearchResults>
+        </csw:GetRecordsResponse>
+        """
+        mock_xslt(rmock)
+        rmock.head(rmock.ANY, headers={"Content-Type": "application/xml"})
+        rmock.post(rmock.ANY, text=xml)
+
+        source = HarvestSourceFactory(
+            backend="csw-iso-19139",
+            config={
+                "extra_configs": [
+                    {"key": "remote_url_prefix", "value": "http://catalog.example.com"}
+                ]
+            },
+        )
+
+        actions.run(source)
+        source.reload()
+        job = source.get_last_job()
+        assert len(job.items) == 2
+
+        parent = Dataset.objects(harvest__remote_id="parent-id").first()
+        child = Dataset.objects(harvest__remote_id="child-id").first()
+        assert parent.extras.get("parent") is None
+        assert child.extras.get("parent") == parent.id
 
 
 @pytest.mark.options(HARVESTER_BACKENDS=["csw-dcat"])

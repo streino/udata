@@ -55,6 +55,7 @@ from udata.rdf import (
     namespace_manager,
     rdf_unique_values,
     rdf_value,
+    record_id_from_rdf,
     remote_url_from_rdf,
     sanitize_html,
     schema_from_rdf,
@@ -147,6 +148,9 @@ QUDT_TO_UDATA = {
     QUDT.KiloM: DistanceUom.KILOMETER,
     QUDT.M: DistanceUom.METER,
 }
+
+# Custom (SEMIC XSLT datagouv patch) record id format: `urn:iso19139:parent:<record uuid>`
+ISO19139_PARENT_PREFIX = "urn:iso19139:parent:"
 
 
 def temporal_to_rdf(daterange: DateRange, graph: Graph | None = None) -> RdfResource | None:
@@ -803,6 +807,24 @@ def inspire_category_from_rights(rights: Collection[str]) -> InspireLimitationCa
     return None
 
 
+def custom_parent_record_id_from_rdf(resource: RdfResource) -> str | None:
+    """Return the first parent record identifier, if any.
+
+    Currently only supports the custom `urn:iso19139:parent:...` pattern implemented ahead of
+    specification in the datagouv ISO-to-DCAT XSLT.
+    """
+    for obj in resource.objects(DCAT.inSeries):
+        if isinstance(obj, Literal):
+            # <dcat:inSeries>...</dcat:inSeries> (lenient)
+            value = str(obj).strip()
+        else:
+            # <dcat:inSeries rdf:resource="...">
+            value = str(obj.identifier).strip()
+        if value and value.startswith(ISO19139_PARENT_PREFIX):
+            return value.removeprefix(ISO19139_PARENT_PREFIX)
+    return None
+
+
 def set_dcat_extra(obj: Dataset | Resource, property: URIRef | str, value: str | Collection):
     key = localname(property) if isinstance(property, URIRef) else property
     if not isinstance(value, str):
@@ -1053,7 +1075,7 @@ def dataset_from_rdf(
     identifier = rdf_value(d, DCT.identifier)
     uri = d.identifier.toPython() if isinstance(d.identifier, URIRef) else None
 
-    remote_url = remote_url_from_rdf(d, graph, remote_url_prefix=remote_url_prefix)
+    remote_url = remote_url_from_rdf(d, remote_url_prefix=remote_url_prefix)
 
     created_at = rdf_value(d, DCT.created)
     issued_at = rdf_value(d, DCT.issued)
@@ -1070,6 +1092,9 @@ def dataset_from_rdf(
     dataset.harvest.modified_at = safe_harvest_datetime(
         modified_at, "DCT.modified (dataset)", refuse_future=True
     )
+
+    dataset.record_id = record_id_from_rdf(d)
+    dataset.parent_record_id = custom_parent_record_id_from_rdf(d)
 
     return dataset
 

@@ -80,6 +80,7 @@ class DcatBackend(BaseBackend):
     @override
     def inner_harvest(self):
         self.job.data = {"format": self.format}
+        full_harvest = False
         try:
             for page_graph, page_number in self.walk_paginated_graph(self.source.url):
                 # cache graph first in case processing raises exceptions, so graphs
@@ -92,11 +93,21 @@ class DcatBackend(BaseBackend):
             # then one pass of attaching datasets to dataservices.
             for page_graph, page_number in self.graphs:
                 self.process_one_dataservices_page(page_graph, page_number)
+
+            full_harvest = True
         finally:
+            try:
+                # `full_harvest` is False on error or StopHarvest
+                self.resolve_parents(full_harvest)
+            except Exception as e:
+                log.exception(f"Failed while resolving parents: {safe_unicode(e)}")
+                self.job.errors.append(
+                    HarvestError(message=safe_unicode(e), details=traceback.format_exc())
+                )
             try:
                 self.store_graphs()
             except Exception as e:
-                log.exception(f"Failed to store harvest graphs: {safe_unicode(e)}")
+                log.exception(f"Failed while storing harvest graphs: {safe_unicode(e)}")
                 self.job.errors.append(
                     HarvestError(message=safe_unicode(e), details=traceback.format_exc())
                 )
@@ -236,6 +247,35 @@ class DcatBackend(BaseBackend):
         )
 
         return dataservice
+
+    def resolve_parents(self, full_harvest: bool = True) -> None:
+        if not full_harvest:
+            log.info("Skipping parent resolution on partial harvest")
+            return
+
+        completed = [
+            (hi, hi.dataset)
+            for hi in self.job.items
+            if hi.status == "done" and hi.dataset is not None
+        ]
+        index = {d.record_id: d for _, d in completed if d.record_id}
+
+        for harvest_item, dataset in completed:
+            if not dataset.parent_record_id:
+                continue
+            parent = index.get(dataset.parent_record_id)
+            if not parent:
+                msg = f'Failed to resolve parent "{dataset.parent_record_id}" for item "{harvest_item.remote_id}"'
+                log.warning(msg)
+                harvest_item.errors.append(HarvestError(message=msg))
+                # FIXME: change status to "failed"?
+            if parent != dataset.extras.get("parent"):
+                if parent:
+                    dataset.extras["parent"] = parent.id
+                else:
+                    del dataset.extras["parent"]
+                if not self.dryrun:
+                    Dataset.objects(id=dataset.id).update_one(set__extras=dataset.extras)
 
     def store_graphs(self):
         # The official MongoDB document size in 16MB. The default value here is 15MB to account
